@@ -33,7 +33,6 @@ packages=(
     netcat-openbsd
     jq
     coreutils
-    openssh-client
 )
 
 missing=()
@@ -46,14 +45,11 @@ command -v ss >/dev/null 2>&1 || missing+=(iproute2)
 command -v nc >/dev/null 2>&1 || missing+=(netcat-openbsd)
 command -v jq >/dev/null 2>&1 || missing+=(jq)
 command -v timeout >/dev/null 2>&1 || missing+=(coreutils)
-command -v ssh >/dev/null 2>&1 || missing+=(openssh-client)
 
 if (( ${#missing[@]} > 0 )); then
     say "Installing required packages: ${missing[*]}"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    # Install the full small dependency set so future menu operations do not
-    # require another package transaction.
     apt-get install -y "${packages[@]}"
 fi
 

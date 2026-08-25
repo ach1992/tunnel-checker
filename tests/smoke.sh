@@ -104,6 +104,11 @@ printf '%s\n' 5201 >"$PORT_FILE"
 )
 
 (
+  socket_busy(){ return 1; }
+  check_target_ports 5201 >/dev/null 2>&1
+)
+
+(
   socket_busy(){ [[ "$1|$2" == 'tcp|5201' ]]; }
   ! check_target_ports 5201 >/dev/null 2>&1
 )

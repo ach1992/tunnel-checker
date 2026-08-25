@@ -54,6 +54,7 @@ detail(){ DETAILS+=("$1|$2"); }
 status_loss(){ [[ -z ${1:-} ]] && { printf N/A; return; }; if fcompare "$1" '<=' .2; then printf GOOD; elif fcompare "$1" '<=' 1; then printf WARN; else printf BAD; fi; }
 status_jit(){ [[ -z ${1:-} ]] && { printf N/A; return; }; if fcompare "$1" '<=' 5; then printf GOOD; elif fcompare "$1" '<=' 15; then printf WARN; else printf BAD; fi; }
 status_speed(){ [[ -z ${1:-} ]] && { printf N/A; return; }; local r; r=$(awk -v m="$1" -v e="$2" 'BEGIN{print m/e}'); if fcompare "$r" '>=' .8; then printf GOOD; elif fcompare "$r" '>=' .5; then printf WARN; else printf BAD; fi; }
+combine_status(){ local a=$1 b=$2; if [[ $a == BAD || $b == BAD ]];then printf BAD;elif [[ $a == WARN || $b == WARN ]];then printf WARN;elif [[ $a == N/A || $b == N/A ]];then printf N/A;else printf GOOD;fi; }
 
 missing_packages(){
   local -a p=(); command -v curl >/dev/null||p+=(curl); command -v iperf3 >/dev/null||p+=(iperf3)
@@ -115,11 +116,11 @@ tcp_tests(){
   f="$TMP_DIR/t1f"; r="$TMP_DIR/t1r"; info "TCP single-stream both directions..."
   tcp_once 0 1 "$s" "$f"&&{ TCP_SINGLE_FWD=$(tcp_mbps "$f"); TCP_RETRANS_FWD=$(tcp_ret "$f"); }
   tcp_once 1 1 "$s" "$r"&&{ TCP_SINGLE_REV=$(tcp_mbps "$r"); TCP_RETRANS_REV=$(tcp_ret "$r"); }
-  row "TCP single stream" "$(fmt "$TCP_SINGLE_FWD" 1) Mbps" "$(fmt "$TCP_SINGLE_REV" 1) Mbps" "$(status_speed "${TCP_SINGLE_FWD:-0}" "$EXPECTED_MBPS")"
+  row "TCP single stream" "$(fmt "$TCP_SINGLE_FWD" 1) Mbps" "$(fmt "$TCP_SINGLE_REV" 1) Mbps" "$(combine_status "$(status_speed "$TCP_SINGLE_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_SINGLE_REV" "$EXPECTED_MBPS")")"
   [[ $TEST_MODE == full ]]||return
   f="$TMP_DIR/t4f"; r="$TMP_DIR/t4r"; info "TCP 4-stream both directions..."
   tcp_once 0 4 "$s" "$f"&&TCP_PAR_FWD=$(tcp_mbps "$f"); tcp_once 1 4 "$s" "$r"&&TCP_PAR_REV=$(tcp_mbps "$r")
-  local st=GOOD; [[ $(status_speed "${TCP_PAR_FWD:-0}" "$EXPECTED_MBPS") == BAD || $(status_speed "${TCP_PAR_REV:-0}" "$EXPECTED_MBPS") == BAD ]]&&st=BAD
+  local st; st=$(combine_status "$(status_speed "$TCP_PAR_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_PAR_REV" "$EXPECTED_MBPS")")
   row "TCP 4 parallel" "$(fmt "$TCP_PAR_FWD" 1) Mbps" "$(fmt "$TCP_PAR_REV" 1) Mbps" "$st"
   row "TCP retransmits" "${TCP_RETRANS_FWD:-N/A}" "${TCP_RETRANS_REV:-N/A}" N/A
   if [[ -n $TCP_PAR_FWD && -n $TCP_PAR_REV ]]; then local hi lo ratio; if fcompare "$TCP_PAR_FWD" '>=' "$TCP_PAR_REV"; then hi=$TCP_PAR_FWD;lo=$TCP_PAR_REV;else hi=$TCP_PAR_REV;lo=$TCP_PAR_FWD;fi; ratio=$(awk -v l="$lo" -v h="$hi" 'BEGIN{print l/h}'); fcompare "$ratio" '<' .5&&rec "TCP is strongly asymmetric; inspect provider routing, congestion, or shaping in the slower direction."; fi
@@ -146,7 +147,7 @@ udp_tests(){
   local -a rates=($((EXPECTED_MBPS/4)) $((EXPECTED_MBPS/2)) "$EXPECTED_MBPS"); ((rates[0]<1))&&rates[0]=1;((rates[1]<1))&&rates[1]=1
   for rate in "${rates[@]}";do f="$TMP_DIR/uf$rate";r="$TMP_DIR/ur$rate"; info "UDP ${rate} Mbps both directions..."
     fm="";rm="";fl="";rl="";fj="";rj=""; udp_once 0 "$rate" "$f"&&{ fm=$(udp_field "$f" mbps);fl=$(udp_field "$f" loss);fj=$(udp_field "$f" jit); }; udp_once 1 "$rate" "$r"&&{ rm=$(udp_field "$r" mbps);rl=$(udp_field "$r" loss);rj=$(udp_field "$r" jit); }
-    st=GOOD; [[ $(status_loss "$fl") == BAD || $(status_loss "$rl") == BAD || $(status_jit "$fj") == BAD || $(status_jit "$rj") == BAD ]]&&st=BAD
+    st=$(combine_status "$(combine_status "$(status_loss "$fl")" "$(status_loss "$rl")")" "$(combine_status "$(status_jit "$fj")" "$(status_jit "$rj")")")
     row "UDP ${rate}M loss/jitter" "$(fmt "$fl" 2)% / $(fmt "$fj" 2)ms" "$(fmt "$rl" 2)% / $(fmt "$rj" 2)ms" "$st"
     if ((rate==EXPECTED_MBPS));then UDP_MAX_FWD_LOSS=$fl;UDP_MAX_REV_LOSS=$rl;UDP_MAX_FWD_JITTER=$fj;UDP_MAX_REV_JITTER=$rj;fi
   done
@@ -193,9 +194,9 @@ save_report(){ root mkdir -p "$LOG_DIR" >/dev/null 2>&1||return; local tmp="$TMP
 reset_state(){ NAMES=();FWD=();REV=();STATES=();RECS=();DETAILS=();PING_FWD_LOSS="";PING_FWD_AVG="";PING_FWD_MDEV="";PING_REV_LOSS="";LOAD_UP_DELTA="";LOAD_DOWN_DELTA="";TCP_SINGLE_FWD="";TCP_SINGLE_REV="";TCP_PAR_FWD="";TCP_PAR_REV="";TCP_RETRANS_FWD="";TCP_RETRANS_REV="";UDP_MAX_FWD_LOSS="";UDP_MAX_REV_LOSS="";UDP_MAX_FWD_JITTER="";UDP_MAX_REV_JITTER="";PMTU_VALUE="";TRACEPATH_PMTU="";IFACE_RX_ERR_DELTA=0;IFACE_RX_DROP_DELTA=0;IFACE_TX_ERR_DELTA=0;IFACE_TX_DROP_DELTA=0;IPERF_REACHABLE=0; }
 run_test(){ TEST_MODE=$1;ensure_deps||{ pause;return 1;};reset_state;TMP_DIR=$(mktemp -d);prepare||{ pause;return 1;};local before after;before=$(iface_stats);[[ $TEST_MODE == quick ]]&&ping_test 15||ping_test 50;[[ $TEST_MODE == quick ]]&&tcp_tests 5||tcp_tests 10;loaded_latency;udp_tests;after=$(iface_stats);iface_delta "$before" "$after";path_tests;reverse_ssh;local sc score verdict;sc=$(compute_score);IFS='|' read -r score verdict<<<"$sc";[[ $verdict == INCOMPLETE ]]&&rec "Bidirectional iperf3 data was incomplete, so the score has low confidence.";print_report "$score" "$verdict";save_report;printf '\nLast summary: %s\n' "$LAST_REPORT";pause; }
 
-server_running(){ [[ -f $PID_FILE ]]||return 1;local p;p=$(cat "$PID_FILE" 2>/dev/null||true);[[ $p =~ ^[0-9]+$ ]]&&kill -0 "$p" 2>/dev/null; }
+server_running(){ [[ -f $PID_FILE ]]||return 1;local p args;p=$(cat "$PID_FILE" 2>/dev/null||true);[[ $p =~ ^[0-9]+$ ]]||return 1;kill -0 "$p" 2>/dev/null||return 1;args=$(ps -p "$p" -o args= 2>/dev/null||true);[[ $args == *timeout* && $args == *iperf3* && $args == *" -s "* ]]; }
 server_status(){ if server_running;then printf 'Status: RUNNING\nPID: %s\nPort: %s TCP/UDP\n' "$(cat "$PID_FILE")" "$(cat "$PORT_FILE" 2>/dev/null||echo '?')";else printf 'Status: STOPPED\n';fi; }
-start_server(){ ensure_deps||{ pause;return 1;};server_running&&{ server_status;pause;return;};local port mins sec;port=$(ask_int "iperf3 server port" "$DEFAULT_PORT" 1 65535);mins=$(ask_int "Automatic shutdown after minutes" 30 1 240);ss -ltnH "sport = :$port" 2>/dev/null|grep -q .&&{ err "TCP port $port is already in use.";pause;return 1;};root mkdir -p "$STATE_DIR" "$LOG_DIR"||return;warn "iperf3 has no authentication. Restrict TCP/UDP $port to the testing peer when possible.";warn "Tunnel Checker does not change firewall rules.";sec=$((mins*60));if is_root;then nohup timeout --signal=TERM "$sec" iperf3 -s -p "$port" >"$SERVER_LOG" 2>&1 & printf '%s\n' $! >"$PID_FILE";printf '%s\n' "$port" >"$PORT_FILE";else sudo bash -c "nohup timeout --signal=TERM '$sec' iperf3 -s -p '$port' >'$SERVER_LOG' 2>&1 & echo \$! >'$PID_FILE'; echo '$port' >'$PORT_FILE'";fi;sleep 1;server_running&&ok "Temporary iperf3 server started for up to $mins minutes."||err "Server failed to start; check $SERVER_LOG";pause; }
+start_server(){ ensure_deps||{ pause;return 1;};server_running&&{ server_status;pause;return;};root rm -f "$PID_FILE" "$PORT_FILE" 2>/dev/null||true;local port mins sec;port=$(ask_int "iperf3 server port" "$DEFAULT_PORT" 1 65535);mins=$(ask_int "Automatic shutdown after minutes" 30 1 240);ss -ltnH "sport = :$port" 2>/dev/null|grep -q .&&{ err "TCP port $port is already in use.";pause;return 1;};root mkdir -p "$STATE_DIR" "$LOG_DIR"||return;warn "iperf3 has no authentication. Restrict TCP/UDP $port to the testing peer when possible.";warn "Tunnel Checker does not change firewall rules.";sec=$((mins*60));if is_root;then nohup timeout --signal=TERM "$sec" iperf3 -s -p "$port" >"$SERVER_LOG" 2>&1 & printf '%s\n' $! >"$PID_FILE";printf '%s\n' "$port" >"$PORT_FILE";else sudo bash -c "nohup timeout --signal=TERM '$sec' iperf3 -s -p '$port' >'$SERVER_LOG' 2>&1 & echo \$! >'$PID_FILE'; echo '$port' >'$PORT_FILE'";fi;sleep 1;server_running&&ok "Temporary iperf3 server started for up to $mins minutes."||err "Server failed to start; check $SERVER_LOG";pause; }
 stop_server(){ if server_running;then local p;p=$(cat "$PID_FILE");root pkill -TERM -P "$p" 2>/dev/null||true;root kill -TERM "$p" 2>/dev/null||true;fi;root rm -f "$PID_FILE" "$PORT_FILE";ok "Test server stopped.";pause; }
 
 update_self(){ ensure_deps||{ pause;return 1;};TMP_DIR=$(mktemp -d);local f="$TMP_DIR/main" u good=0;for u in "$RAW_URL" "$CDN_URL";do info "Trying $u";if curl -fsSL --connect-timeout 10 --max-time 30 "$u" -o "$f"&&[[ -s $f ]]&&bash -n "$f";then good=1;break;fi;done;((good))||{ err "Could not download a valid update.";pause;return 1;};root mkdir -p "$INSTALL_DIR";root install -m 0755 "$f" "$INSTALL_PATH";root ln -sfn "$INSTALL_PATH" "$BIN_PATH";ok "Tunnel Checker updated.";pause; }

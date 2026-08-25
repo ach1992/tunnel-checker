@@ -8,6 +8,7 @@ INSTALL_PATH="${INSTALL_DIR}/tunnel-checker.sh"
 BIN_PATH="/usr/local/bin/tunnel-checker"
 STATE_DIR="/var/lib/tunnel-checker"
 LOG_DIR="/var/log/tunnel-checker"
+API_URL="https://api.github.com/repos/${REPO}/contents/tunnel-checker.sh?ref=main"
 RAW_URL="https://raw.githubusercontent.com/${REPO}/main/tunnel-checker.sh"
 CDN_URL="https://cdn.jsdelivr.net/gh/${REPO}@main/tunnel-checker.sh"
 
@@ -57,15 +58,33 @@ tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
 success=0
-for url in "$RAW_URL" "$CDN_URL"; do
-    say "Downloading Tunnel Checker from: $url"
-    if curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$tmp" && [[ -s "$tmp" ]] && bash -n "$tmp"; then
+for source in api raw cdn; do
+    : >"$tmp"
+    case "$source" in
+        api)
+            say "Downloading Tunnel Checker from GitHub API"
+            curl -fsSL --connect-timeout 8 --max-time 30 \
+                -H 'Accept: application/vnd.github.raw+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                -H 'User-Agent: tunnel-checker' \
+                "$API_URL" -o "$tmp" || continue
+            ;;
+        raw)
+            say "Downloading Tunnel Checker from GitHub Raw"
+            curl -fsSL --connect-timeout 8 --max-time 30 "$RAW_URL" -o "$tmp" || continue
+            ;;
+        cdn)
+            say "Downloading Tunnel Checker from jsDelivr"
+            curl -fsSL --connect-timeout 8 --max-time 30 "$CDN_URL" -o "$tmp" || continue
+            ;;
+    esac
+    if [[ -s "$tmp" ]] && bash -n "$tmp"; then
         success=1
         break
     fi
 done
 
-(( success == 1 )) || fail "Could not download a valid Tunnel Checker script from GitHub or jsDelivr."
+(( success == 1 )) || fail "Could not download a valid Tunnel Checker script from GitHub API, GitHub Raw, or jsDelivr."
 
 install -d -m 0755 "$INSTALL_DIR" "$STATE_DIR" "$LOG_DIR"
 install -m 0755 "$tmp" "$INSTALL_PATH"

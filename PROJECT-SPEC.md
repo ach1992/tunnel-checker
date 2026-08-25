@@ -54,7 +54,7 @@ The readiness score is advisory but must remain useful when some optional eviden
 - Core independent TCP/UDP evidence may drive a score without requiring an application-specific throughput tool.
 - Missing optional evidence lowers confidence rather than automatically making the whole result unusable.
 - Confirmed severe failures may cap the score/verdict even when other metrics are healthy.
-- UDP scoring uses the worse observed loss across small practical-size probes and the bounded sustained UDP sample, with large UDP timing variation treated as cautionary evidence.
+- UDP scoring uses the worse observed loss across practical-size probes and the bounded sustained UDP sample.
 - Confidence reflects evidence coverage, not optimism.
 - The score must never imply that an untested Foreign IP/range or protocol signature will behave the same way.
 

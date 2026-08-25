@@ -11,7 +11,8 @@ export TUNNEL_CHECKER_SOURCE_ONLY=1
 source "$ROOT/tunnel-checker.sh"
 
 sample_ping="$(mktemp)"
-trap 'rm -f "$sample_ping"' EXIT
+stale_pid="$(mktemp)"
+trap 'rm -f "$sample_ping" "$stale_pid"' EXIT
 cat >"$sample_ping" <<'PING'
 50 packets transmitted, 50 received, 0% packet loss, time 9820ms
 rtt min/avg/max/mdev = 45.120/47.250/55.800/2.430 ms
@@ -19,6 +20,14 @@ PING
 
 parsed="$(parse_ping "$sample_ping")"
 [[ "$parsed" == "0|47.250|2.430" ]]
+[[ "$(combine_status GOOD WARN)" == WARN ]]
+[[ "$(combine_status WARN BAD)" == BAD ]]
+
+original_pid_file=$PID_FILE
+PID_FILE=$stale_pid
+printf '%s\n' "$$" >"$PID_FILE"
+! server_running
+PID_FILE=$original_pid_file
 
 TEST_MODE=full
 PING_FWD_LOSS=0.1

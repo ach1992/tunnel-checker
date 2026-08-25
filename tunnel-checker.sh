@@ -3,6 +3,7 @@ set -uo pipefail
 
 VERSION="0.3.0"
 REPO="ach1992/tunnel-checker"
+REPO_URL="https://github.com/$REPO"
 INSTALL_DIR="/usr/local/lib/tunnel-checker"
 INSTALL_PATH="$INSTALL_DIR/tunnel-checker.sh"
 BIN_PATH="/usr/local/bin/tunnel-checker"
@@ -38,7 +39,7 @@ UDP_MAX_FWD_LOSS=""; UDP_MAX_REV_LOSS=""; UDP_MAX_FWD_JITTER=""; UDP_MAX_REV_JIT
 UDP_ERROR_FWD=""; UDP_ERROR_REV=""; LOAD_ERROR_UP=""; LOAD_ERROR_DOWN=""
 PMTU_VALUE=""; TRACEPATH_PMTU=""; MTR_ICMP_LOSS=""; MTR_TCP_LOSS=""; MTR_UDP_LOSS=""
 IFACE_RX_ERR_DELTA=0; IFACE_RX_DROP_DELTA=0; IFACE_TX_ERR_DELTA=0; IFACE_TX_DROP_DELTA=0; IFACE_DROP_RATE=""; IFACE_PACKET_DELTA=0; IFACE_SAMPLE_ADEQUATE=0
-IPERF_REACHABLE=0; EXPECTED_MBPS=$DEFAULT_MBPS; TEST_MODE=full
+IPERF_REACHABLE=0; IPERF_CONNECTED=0; IPERF_REUSABLE=0; EXPECTED_MBPS=$DEFAULT_MBPS; TEST_MODE=full
 TCP_PATH_CLASS=""; TCP_DIAG_BYTES=""; TCP_DIAG_PEER=0; UDP_DIAG_STATE=""; UDP_DIAG_RECEIVED=""; UDP_DIAG_PEER=0
 PEER_HOST=""; PEER_IP=""; IPERF_PORT=$DEFAULT_PORT; TCP_DIAG_PORT=$((DEFAULT_PORT+1)); UDP_DIAG_PORT=$((DEFAULT_PORT+2)); LOCAL_IFACE=""; LOCAL_SRC=""
 
@@ -69,6 +70,16 @@ role_name(){ [[ ${1:-} == iran ]] && printf IRAN || printf FOREIGN; }
 set_peer_role(){ [[ $ROLE == iran ]] && PEER_ROLE=foreign || PEER_ROLE=iran; }
 forward_label(){ printf '%s->%s' "$(role_name "$ROLE")" "$(role_name "$PEER_ROLE")"; }
 reverse_label(){ printf '%s->%s' "$(role_name "$PEER_ROLE")" "$(role_name "$ROLE")"; }
+local_ipv4(){
+  local rt ip=""
+  rt=$(ip -4 route get 1.1.1.1 2>/dev/null|head -1||true)
+  ip=$(awk '{for(i=1;i<=NF;i++)if($i=="src"){print $(i+1);exit}}'<<<"$rt")
+  if [[ ! $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]];then
+    ip=$(hostname -I 2>/dev/null|awk '{for(i=1;i<=NF;i++)if($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/){print $i;exit}}'||true)
+  fi
+  printf '%s' "${ip:-N/A}"
+}
+header_line(){ printf '%b| %-86.86s |%b\n' "$BL$B" "$1" "$R"; }
 
 load_role(){ ROLE=""; [[ -r $ROLE_FILE ]] && ROLE=$(tr -d '[:space:]' <"$ROLE_FILE" 2>/dev/null || true); [[ $ROLE == iran || $ROLE == foreign ]] || ROLE=""; [[ -n $ROLE ]] && set_peer_role; }
 save_role(){ root mkdir -p "$STATE_DIR" >/dev/null 2>&1 || return 1; printf '%s\n' "$ROLE" | root tee "$ROLE_FILE" >/dev/null || return 1; }
@@ -90,10 +101,14 @@ choose_role(){
 ensure_role(){ load_role; [[ -n $ROLE ]] || choose_role; }
 banner(){
   printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  printf '%b| Tunnel Checker v%-70s |%b\n' "$BL$B" "$VERSION" "$R"
-  printf '%b| Two-sided tunnel-link diagnostics %-49s |%b\n' "$BL$B" '' "$R"
+  header_line "Tunnel Checker v$VERSION"
+  header_line "Two-sided tunnel-link diagnostics"
+  header_line "Repo: $REPO_URL"
   printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  if [[ -n $ROLE ]]; then printf ' Endpoint: %b%s%b    Peer: %b%s%b    Test direction: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R" "$B" "$(forward_label)" "$R"; fi
+  if [[ -n $ROLE ]]; then
+    printf ' Endpoint: %b%s%b    Local IPv4: %b%s%b    Peer: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(local_ipv4)" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R"
+    printf ' Test direction: %b%s%b\n' "$B" "$(forward_label)" "$R"
+  fi
 }
 
 missing_packages(){
@@ -148,13 +163,23 @@ ping_test(){
 }
 
 iperf_probe(){
-  local f="$TMP_DIR/iperf-probe.txt"
+  local f="$TMP_DIR/iperf-probe.txt" rc=0
   info "iperf3 protocol reachability..."
-  timeout 8 stdbuf -oL -eL iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -P 1 -t 1 -i 1 >"$f" 2>&1||true
-  if grep -Eqi '(^|[[:space:]])connected to[[:space:]]' "$f";then IPERF_REACHABLE=1;row "iperf3 protocol session" Reachable - GOOD;return 0;fi
-  IPERF_REACHABLE=0
-  row "iperf3 protocol session" "Unavailable" - BAD
-  rec "A real iperf3 session could not establish protocol reachability on TCP $IPERF_PORT; the active service port was not probed with nc."
+  timeout 8 stdbuf -oL -eL iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -P 1 -n 4K -i 1 >"$f" 2>&1||rc=$?
+  IPERF_CONNECTED=0;IPERF_REACHABLE=0;IPERF_REUSABLE=0
+  grep -Eqi '(^|[[:space:]])connected to[[:space:]]' "$f"&&IPERF_CONNECTED=1||true
+  if ((rc==0 && IPERF_CONNECTED==1));then
+    IPERF_REACHABLE=1;IPERF_REUSABLE=1
+    row "iperf3 protocol session" Reachable - GOOD
+    return 0
+  fi
+  if ((IPERF_CONNECTED==1));then
+    row "iperf3 protocol session" "Connected; incomplete" - WARN
+    rec "iperf3 connected but its bounded probe did not complete; later iperf3 tests are skipped because the single-client target may still be busy. Independent TCP/UDP diagnostics continue."
+  else
+    row "iperf3 protocol session" "Unavailable" - BAD
+    rec "A real iperf3 session could not establish protocol reachability on TCP $IPERF_PORT; the active service port was not probed with nc."
+  fi
   return 1
 }
 iperf_error(){
@@ -227,44 +252,57 @@ udp_continuity_diag(){
 tcp_once(){
   local rev=$1 streams=$2 seconds=$3 f=$4 rc=0; local -a c=(iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -P "$streams" -t "$seconds" -J)
   [[ $rev == 1 ]]&&c+=(-R); timeout $((seconds+15)) "${c[@]}" >"$f" 2>"$f.err"||rc=$?
-  ((rc==0)) || return 1
-  jq -e '.end and (((.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//0)|tonumber) > 0)' "$f" >/dev/null 2>&1
+  if ((rc!=0));then IPERF_REUSABLE=0;return 1;fi
+  if ! jq -e '.end and (((.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//0)|tonumber) > 0)' "$f" >/dev/null 2>&1;then IPERF_REUSABLE=0;return 1;fi
 }
 tcp_mbps(){ jq -r '(.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//empty)/1000000' "$1" 2>/dev/null; }
 tcp_ret(){ jq -r '.end.sum_sent.retransmits//empty' "$1" 2>/dev/null; }
 tcp_tests(){
   local s=$1 f r st
   if ! iperf_probe;then
-    [[ $TEST_MODE == full ]]&&tcp_continuity_diag
+    row "TCP single stream" N/A N/A N/A
+    if [[ $TEST_MODE == full ]];then tcp_continuity_diag;row "TCP 4 parallel" N/A N/A N/A;row "TCP retransmits" N/A N/A N/A;fi
     return
   fi
   f="$TMP_DIR/t1f"; r="$TMP_DIR/t1r"; info "TCP single-stream both directions..."
   if tcp_once 0 1 "$s" "$f";then TCP_SINGLE_FWD=$(tcp_mbps "$f");TCP_RETRANS_FWD=$(tcp_ret "$f");else TCP_ERROR_FWD=$(iperf_error "$f");rec "TCP $(forward_label) test failed: $TCP_ERROR_FWD";fi
-  if tcp_once 1 1 "$s" "$r";then TCP_SINGLE_REV=$(tcp_mbps "$r");TCP_RETRANS_REV=$(tcp_ret "$r");else TCP_ERROR_REV=$(iperf_error "$r");rec "TCP $(reverse_label) test failed: $TCP_ERROR_REV";fi
+  if ((IPERF_REUSABLE==1));then
+    if tcp_once 1 1 "$s" "$r";then TCP_SINGLE_REV=$(tcp_mbps "$r");TCP_RETRANS_REV=$(tcp_ret "$r");else TCP_ERROR_REV=$(iperf_error "$r");rec "TCP $(reverse_label) test failed: $TCP_ERROR_REV";fi
+  else
+    rec "Remaining iperf3 tests were skipped after an incomplete data session because the single-client target may still be busy; independent diagnostics continue."
+  fi
   if [[ -n $TCP_SINGLE_FWD && -n $TCP_SINGLE_REV ]];then st=$(combine_status "$(status_speed "$TCP_SINGLE_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_SINGLE_REV" "$EXPECTED_MBPS")");else st=FAILED;fi
-  row "TCP single stream" "$([[ -n $TCP_SINGLE_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_FWD" 1)"||printf FAILED)" "$([[ -n $TCP_SINGLE_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_REV" 1)"||printf FAILED)" "$st"
+  row "TCP single stream" "$([[ -n $TCP_SINGLE_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_FWD" 1)"||[[ -n $TCP_ERROR_FWD ]]&&printf FAILED||printf N/A)" "$([[ -n $TCP_SINGLE_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_REV" 1)"||[[ -n $TCP_ERROR_REV ]]&&printf FAILED||printf N/A)" "$st"
   [[ $TEST_MODE == full ]]||return
-  if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then tcp_continuity_diag;fi
+  if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then
+    tcp_continuity_diag
+    row "TCP 4 parallel" N/A N/A N/A
+    row "TCP retransmits" "${TCP_RETRANS_FWD:-N/A}" "${TCP_RETRANS_REV:-N/A}" N/A
+    return
+  fi
   f="$TMP_DIR/t4f"; r="$TMP_DIR/t4r"; info "TCP 4-stream both directions..."
-  tcp_once 0 4 "$s" "$f"&&TCP_PAR_FWD=$(tcp_mbps "$f")||true
-  tcp_once 1 4 "$s" "$r"&&TCP_PAR_REV=$(tcp_mbps "$r")||true
+  if tcp_once 0 4 "$s" "$f";then TCP_PAR_FWD=$(tcp_mbps "$f");fi
+  if ((IPERF_REUSABLE==1));then tcp_once 1 4 "$s" "$r"&&TCP_PAR_REV=$(tcp_mbps "$r")||true
+  else rec "Remaining iperf3 tests were skipped after an incomplete data session because the single-client target may still be busy; independent diagnostics continue.";fi
   if [[ -n $TCP_PAR_FWD && -n $TCP_PAR_REV ]];then st=$(combine_status "$(status_speed "$TCP_PAR_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_PAR_REV" "$EXPECTED_MBPS")");else st=FAILED;fi
-  row "TCP 4 parallel" "$([[ -n $TCP_PAR_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_FWD" 1)"||printf FAILED)" "$([[ -n $TCP_PAR_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_REV" 1)"||printf FAILED)" "$st"
+  row "TCP 4 parallel" "$([[ -n $TCP_PAR_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_FWD" 1)"||printf FAILED)" "$([[ -n $TCP_PAR_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_REV" 1)"||((IPERF_REUSABLE==0))&&printf N/A||printf FAILED)" "$st"
   row "TCP retransmits" "${TCP_RETRANS_FWD:-N/A}" "${TCP_RETRANS_REV:-N/A}" N/A
+  if [[ -z $TCP_PAR_FWD || -z $TCP_PAR_REV ]];then tcp_continuity_diag;return;fi
   if [[ -n $TCP_PAR_FWD && -n $TCP_PAR_REV ]]; then local hi lo ratio; if fcompare "$TCP_PAR_FWD" '>=' "$TCP_PAR_REV"; then hi=$TCP_PAR_FWD;lo=$TCP_PAR_REV;else hi=$TCP_PAR_REV;lo=$TCP_PAR_FWD;fi; ratio=$(awk -v l="$lo" -v h="$hi" 'BEGIN{print l/h}'); fcompare "$ratio" '<' .5&&rec "TCP is strongly asymmetric; inspect provider routing, congestion, or shaping in the slower direction."; fi
 }
 
 loaded_latency(){
-  [[ $TEST_MODE == full && $IPERF_REACHABLE -eq 1 && -n $PING_FWD_AVG ]]||return
+  [[ $TEST_MODE == full ]]||return
+  if ((IPERF_REACHABLE!=1 || IPERF_REUSABLE!=1)) || [[ -z $PING_FWD_AVG ]];then row "Loaded RTT increase" N/A N/A N/A;return;fi
   if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then row "Loaded RTT increase" N/A N/A N/A;rec "Loaded-latency test was skipped because the baseline iperf3 data test did not complete.";return;fi
   local rev label lf pf pid p loss avg md delta up=N/A down=N/A overall=N/A active=0 rc
   for rev in 0 1; do
     [[ $rev == 0 ]]&&label=upload||label=download; lf="$TMP_DIR/load-$label"; pf="$TMP_DIR/lping-$label"
     local -a c=(iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -P 4 -t 10 -J); [[ $rev == 1 ]]&&c+=(-R)
     info "RTT under $label load..."; timeout 25 "${c[@]}" >"$lf" 2>"$lf.err" & pid=$!; sleep 2
-    if ! kill -0 "$pid" 2>/dev/null;then wait "$pid" 2>/dev/null||true; [[ $rev == 0 ]]&&LOAD_ERROR_UP=$(iperf_error "$lf")||LOAD_ERROR_DOWN=$(iperf_error "$lf");continue;fi
+    if ! kill -0 "$pid" 2>/dev/null;then wait "$pid" 2>/dev/null||true; [[ $rev == 0 ]]&&LOAD_ERROR_UP=$(iperf_error "$lf")||LOAD_ERROR_DOWN=$(iperf_error "$lf");IPERF_REUSABLE=0;break;fi
     LC_ALL=C ping -4 -n -q -c 25 -i .2 -W 2 "$PEER_IP" >"$pf" 2>&1||true; rc=0;wait "$pid" 2>/dev/null||rc=$?
-    if ((rc!=0)) || ! jq -e '.end and (((.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//0)|tonumber) > 0)' "$lf" >/dev/null 2>&1;then [[ $rev == 0 ]]&&LOAD_ERROR_UP=$(iperf_error "$lf")||LOAD_ERROR_DOWN=$(iperf_error "$lf");continue;fi
+    if ((rc!=0)) || ! jq -e '.end and (((.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//0)|tonumber) > 0)' "$lf" >/dev/null 2>&1;then [[ $rev == 0 ]]&&LOAD_ERROR_UP=$(iperf_error "$lf")||LOAD_ERROR_DOWN=$(iperf_error "$lf");IPERF_REUSABLE=0;break;fi
     p=$(parse_ping "$pf"); IFS='|' read -r loss avg md<<<"$p"; [[ -z $avg ]]&&continue; delta=$(awk -v a="$avg" -v b="$PING_FWD_AVG" 'BEGIN{d=a-b;if(d<0)d=0;print d}')
     active=$((active+1)); if [[ $rev == 0 ]];then LOAD_UP_DELTA=$delta;up="+$(fmt "$delta" 1) ms";else LOAD_DOWN_DELTA=$delta;down="+$(fmt "$delta" 1) ms";fi
   done
@@ -274,24 +312,33 @@ loaded_latency(){
   row "Loaded RTT increase" "$up" "$down" "$overall"; [[ $overall == BAD ]]&&rec "Latency rises sharply under load; queueing/bufferbloat or congestion can break tunnel responsiveness despite good idle ping."
 }
 
-udp_once(){ local rev=$1 rate=$2 f=$3 rc=0; local -a c=(iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -u -b "${rate}M" -t 7 -J); [[ $rev == 1 ]]&&c+=(-R);timeout 22 "${c[@]}" >"$f" 2>"$f.err"||rc=$?;((rc==0))||return 1;jq -e '.end.sum and ((.end.sum.bits_per_second//0)>0)' "$f" >/dev/null 2>&1; }
+udp_once(){
+  local rev=$1 rate=$2 f=$3 rc=0; local -a c=(iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -u -b "${rate}M" -t 7 -J); [[ $rev == 1 ]]&&c+=(-R)
+  timeout 22 "${c[@]}" >"$f" 2>"$f.err"||rc=$?
+  if ((rc!=0));then IPERF_REUSABLE=0;return 1;fi
+  if ! jq -e '.end.sum and ((.end.sum.bits_per_second//0)>0)' "$f" >/dev/null 2>&1;then IPERF_REUSABLE=0;return 1;fi
+}
 udp_field(){ case $2 in mbps)jq -r '(.end.sum.bits_per_second//empty)/1000000' "$1";;loss)jq -r '.end.sum.lost_percent//empty' "$1";;jit)jq -r '.end.sum.jitter_ms//empty' "$1";;esac 2>/dev/null; }
 udp_tests(){
   [[ $TEST_MODE == full ]]||return
   local rate f r fm rm fl rl fj rj st
-  if ((IPERF_REACHABLE==1));then
+  if ((IPERF_REACHABLE==1 && IPERF_REUSABLE==1));then
     local -a rates=($((EXPECTED_MBPS/4)) $((EXPECTED_MBPS/2)) "$EXPECTED_MBPS");((rates[0]<1))&&rates[0]=1;((rates[1]<1))&&rates[1]=1
     for rate in "${rates[@]}";do
       f="$TMP_DIR/uf$rate";r="$TMP_DIR/ur$rate";info "UDP ${rate} Mbps both directions...";fm="";rm="";fl="";rl="";fj="";rj=""
       if udp_once 0 "$rate" "$f";then fm=$(udp_field "$f" mbps);fl=$(udp_field "$f" loss);fj=$(udp_field "$f" jit);elif ((rate==EXPECTED_MBPS));then UDP_ERROR_FWD=$(iperf_error "$f");fi
-      if udp_once 1 "$rate" "$r";then rm=$(udp_field "$r" mbps);rl=$(udp_field "$r" loss);rj=$(udp_field "$r" jit);elif ((rate==EXPECTED_MBPS));then UDP_ERROR_REV=$(iperf_error "$r");fi
+      if ((IPERF_REUSABLE==1));then
+        if udp_once 1 "$rate" "$r";then rm=$(udp_field "$r" mbps);rl=$(udp_field "$r" loss);rj=$(udp_field "$r" jit);elif ((rate==EXPECTED_MBPS));then UDP_ERROR_REV=$(iperf_error "$r");fi
+      fi
       if [[ -n $fl && -n $rl && -n $fj && -n $rj ]];then st=$(combine_status "$(combine_status "$(status_loss "$fl")" "$(status_loss "$rl")")" "$(combine_status "$(status_jit "$fj")" "$(status_jit "$rj")")");else st=FAILED;fi
-      row "UDP ${rate}M loss/jitter" "$([[ -n $fl ]]&&printf '%s%% / %sms' "$(fmt "$fl" 2)" "$(fmt "$fj" 2)"||printf FAILED)" "$([[ -n $rl ]]&&printf '%s%% / %sms' "$(fmt "$rl" 2)" "$(fmt "$rj" 2)"||printf FAILED)" "$st"
+      row "UDP ${rate}M loss/jitter" "$([[ -n $fl ]]&&printf '%s%% / %sms' "$(fmt "$fl" 2)" "$(fmt "$fj" 2)"||printf FAILED)" "$([[ -n $rl ]]&&printf '%s%% / %sms' "$(fmt "$rl" 2)" "$(fmt "$rj" 2)"||((IPERF_REUSABLE==0))&&printf N/A||printf FAILED)" "$st"
       if ((rate==EXPECTED_MBPS));then UDP_MAX_FWD_LOSS=$fl;UDP_MAX_REV_LOSS=$rl;UDP_MAX_FWD_JITTER=$fj;UDP_MAX_REV_JITTER=$rj;fi
+      if ((IPERF_REUSABLE==0));then rec "Remaining iperf3 tests were skipped after an incomplete data session because the single-client target may still be busy; independent diagnostics continue.";break;fi
     done
   else
     row "UDP target-rate test" N/A N/A N/A
-    rec "UDP iperf3 was not treated as UDP-path evidence because its TCP control session was unavailable."
+    if ((IPERF_CONNECTED==1));then rec "UDP iperf3 target-rate tests were skipped because the prior iperf3 session did not complete cleanly and the single-client target may still be busy."
+    else rec "UDP iperf3 was not treated as UDP-path evidence because its TCP control session was unavailable.";fi
   fi
   [[ -n $UDP_ERROR_FWD ]]&&rec "UDP $(forward_label) iperf3 test failed: $UDP_ERROR_FWD"
   [[ -n $UDP_ERROR_REV ]]&&rec "UDP $(reverse_label) iperf3 test failed: $UDP_ERROR_REV"
@@ -388,7 +435,7 @@ save_report(){
   { printf 'Tunnel Checker v%s\nEndpoint: %s\nPeer role: %s\nDirection: %s\nPeer: %s (%s)\nExpected: %s Mbps\nScore: %s\nVerdict: %s\nConfidence: %s\n\n' "$VERSION" "$(role_name "$ROLE")" "$(role_name "$PEER_ROLE")" "$(forward_label)" "$PEER_HOST" "$PEER_IP" "$EXPECTED_MBPS" "$score" "$verdict" "$confidence";for((i=0;i<${#NAMES[@]};i++));do printf '%s | %s | %s | %s\n' "${NAMES[i]}" "${FWD[i]}" "${REV[i]}" "${STATES[i]}";done;printf '\nRecommendations:\n';for d in "${RECS[@]:-}";do printf -- '- %s\n' "$d";done;} >"$tmp"
   root cp "$tmp" "$LAST_REPORT"
 }
-reset_state(){ NAMES=();FWD=();REV=();STATES=();RECS=();DETAILS=();PING_FWD_LOSS="";PING_FWD_AVG="";PING_FWD_MDEV="";LOAD_UP_DELTA="";LOAD_DOWN_DELTA="";TCP_SINGLE_FWD="";TCP_SINGLE_REV="";TCP_PAR_FWD="";TCP_PAR_REV="";TCP_RETRANS_FWD="";TCP_RETRANS_REV="";TCP_ERROR_FWD="";TCP_ERROR_REV="";UDP_MAX_FWD_LOSS="";UDP_MAX_REV_LOSS="";UDP_MAX_FWD_JITTER="";UDP_MAX_REV_JITTER="";UDP_ERROR_FWD="";UDP_ERROR_REV="";PMTU_VALUE="";TRACEPATH_PMTU="";MTR_ICMP_LOSS="";MTR_TCP_LOSS="";MTR_UDP_LOSS="";IFACE_RX_ERR_DELTA=0;IFACE_RX_DROP_DELTA=0;IFACE_TX_ERR_DELTA=0;IFACE_TX_DROP_DELTA=0;IFACE_DROP_RATE="";IFACE_PACKET_DELTA=0;IFACE_SAMPLE_ADEQUATE=0;IPERF_REACHABLE=0;TCP_PATH_CLASS="";TCP_DIAG_BYTES="";TCP_DIAG_PEER=0;UDP_DIAG_STATE="";UDP_DIAG_RECEIVED="";UDP_DIAG_PEER=0; }
+reset_state(){ NAMES=();FWD=();REV=();STATES=();RECS=();DETAILS=();PING_FWD_LOSS="";PING_FWD_AVG="";PING_FWD_MDEV="";LOAD_UP_DELTA="";LOAD_DOWN_DELTA="";TCP_SINGLE_FWD="";TCP_SINGLE_REV="";TCP_PAR_FWD="";TCP_PAR_REV="";TCP_RETRANS_FWD="";TCP_RETRANS_REV="";TCP_ERROR_FWD="";TCP_ERROR_REV="";UDP_MAX_FWD_LOSS="";UDP_MAX_REV_LOSS="";UDP_MAX_FWD_JITTER="";UDP_MAX_REV_JITTER="";UDP_ERROR_FWD="";UDP_ERROR_REV="";PMTU_VALUE="";TRACEPATH_PMTU="";MTR_ICMP_LOSS="";MTR_TCP_LOSS="";MTR_UDP_LOSS="";IFACE_RX_ERR_DELTA=0;IFACE_RX_DROP_DELTA=0;IFACE_TX_ERR_DELTA=0;IFACE_TX_DROP_DELTA=0;IFACE_DROP_RATE="";IFACE_PACKET_DELTA=0;IFACE_SAMPLE_ADEQUATE=0;IPERF_REACHABLE=0;IPERF_CONNECTED=0;IPERF_REUSABLE=0;TCP_PATH_CLASS="";TCP_DIAG_BYTES="";TCP_DIAG_PEER=0;UDP_DIAG_STATE="";UDP_DIAG_RECEIVED="";UDP_DIAG_PEER=0; }
 run_test(){ TEST_MODE=$1;ensure_deps||{ pause;return 1;};reset_state;TMP_DIR=$(mktemp -d);prepare||{ pause;return 1;};section "RUNNING $(printf '%s' "$TEST_MODE"|tr '[:lower:]' '[:upper:]') TEST — $(forward_label)";local before after;before=$(iface_stats);[[ $TEST_MODE == quick ]]&&ping_test 15||ping_test 50;[[ $TEST_MODE == quick ]]&&tcp_tests 5||tcp_tests 10;loaded_latency;udp_tests;after=$(iface_stats);iface_delta "$before" "$after";path_tests;local sc score verdict confidence;sc=$(compute_score);IFS='|' read -r score verdict confidence<<<"$sc";[[ $verdict == INCOMPLETE ]]&&rec "Essential data tests are incomplete; do not use this run alone to accept or reject the server pair.";print_report "$score" "$verdict" "$confidence";save_report "$score" "$verdict" "$confidence";printf '\nLast summary: %s\n' "$LAST_REPORT";pause; }
 
 pid_value(){ local f=$1 p="";[[ -r $f ]]&&p=$(cat "$f" 2>/dev/null||true);[[ $p =~ ^[0-9]+$ ]]&&printf '%s' "$p"; }

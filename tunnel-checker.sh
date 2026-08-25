@@ -164,27 +164,32 @@ iperf_error(){
   printf '%s' "${x:-unknown iperf3 failure}"
 }
 classify_tcp_continuity(){
-  local sent=$1 recv=$2 first=$3 later=$4 rc=$5
-  if ((rc==0 && recv==sent && sent>0));then printf HEALTHY
-  elif ((recv>0 && rc==124 && later<=first));then printf SUSTAINED_STALL
+  local sent=$1 recv=$2 rc=$3 stalled=$4
+  if ((recv==sent && sent>0));then printf HEALTHY
+  elif ((recv>0 && rc==124 && stalled>=3));then printf SUSTAINED_STALL
   elif ((recv>0 && recv<sent));then printf DEGRADED
   else printf UNAVAILABLE;fi
 }
 tcp_continuity_diag(){
   [[ $TEST_MODE == full ]]||return
   [[ -n $TCP_PATH_CLASS ]]&&return
-  local payload="$TMP_DIR/tcp-diag.payload" out="$TMP_DIR/tcp-diag.out" er="$TMP_DIR/tcp-diag.err" token pid rc=0 first=0 later=0 sent recv st
+  local payload="$TMP_DIR/tcp-diag.payload" out="$TMP_DIR/tcp-diag.out" er="$TMP_DIR/tcp-diag.err" token pid rc=0 sent recv st elapsed=0 last=0 current=0 stalled=0
   token="TCV03-${RANDOM}-${RANDOM}-"
   { printf '%s' "$token"; dd if=/dev/zero bs=1024 count=512 status=none; } >"$payload"
+  sent=$(stat -c %s "$payload")
   info "Independent TCP continuity on port $TCP_DIAG_PORT..."
-  timeout 10 socat - "TCP4:$PEER_IP:$TCP_DIAG_PORT,connect-timeout=4" <"$payload" >"$out" 2>"$er" & pid=$!
-  sleep 2; [[ -f $out ]]&&first=$(stat -c %s "$out" 2>/dev/null||printf 0)
-  if kill -0 "$pid" 2>/dev/null;then sleep 4;fi
-  [[ -f $out ]]&&later=$(stat -c %s "$out" 2>/dev/null||printf 0)
+  timeout 10 socat STDIO,ignoreeof "TCP4:$PEER_IP:$TCP_DIAG_PORT,connect-timeout=4" <"$payload" >"$out" 2>"$er" & pid=$!
+  while kill -0 "$pid" 2>/dev/null && ((elapsed<10));do
+    sleep 1;elapsed=$((elapsed+1));current=$(stat -c %s "$out" 2>/dev/null||printf 0)
+    if ((current>last));then stalled=0;else stalled=$((stalled+1));fi
+    last=$current
+    if ((current>=sent));then kill -TERM "$pid" 2>/dev/null||true;break;fi
+  done
   wait "$pid" 2>/dev/null||rc=$?
-  sent=$(stat -c %s "$payload");recv=$(stat -c %s "$out" 2>/dev/null||printf 0)
+  recv=$(stat -c %s "$out" 2>/dev/null||printf 0)
+  ((recv>last))&&stalled=0
   if ((recv>=${#token})) && cmp -n "${#token}" "$payload" "$out" >/dev/null 2>&1;then TCP_DIAG_PEER=1;fi
-  TCP_PATH_CLASS=$(classify_tcp_continuity "$sent" "$recv" "$first" "$later" "$rc")
+  TCP_PATH_CLASS=$(classify_tcp_continuity "$sent" "$recv" "$rc" "$stalled")
   TCP_DIAG_BYTES="$recv/$sent B"
   case $TCP_PATH_CLASS in
     HEALTHY) st=GOOD;rec "Independent TCP continuity completed on the isolated diagnostic socket; if iperf3 failed, the failure may be iperf3/control-specific rather than a general TCP data-path failure.";;

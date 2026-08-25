@@ -1,0 +1,53 @@
+name: One-shot transfer repair
+
+on:
+  push:
+    branches: [fix/issue-5-api-download-fallback]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: fix/issue-5-api-download-fallback
+          fetch-depth: 0
+
+      - name: Repair and verify exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tunnel-checker.sh')
+          s = p.read_text()
+          fixes = {
+              "printf '%b| Tunnel Check v%-70s |%b\\n'": "printf '%b| Tunnel Checker v%-70s |%b\\n'",
+              "printf '%b+-----------------------------------------------------------------------------------------+%b\\n'": "printf '%b+----------------------------------------------------------------------------------------+%b\\n'",
+              "printf ' Endpoint: %b%se%b    Peer: %b%s%b    Test direction: %b%s%b\\n'": "printf ' Endpoint: %b%s%b    Peer: %b%s%b    Test direction: %b%s%b\\n'",
+          }
+          for old, new in fixes.items():
+              if old not in s:
+                  raise SystemExit(f'missing expected transfer defect: {old}')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          test "$(git hash-object tunnel-checker.sh)" = "76f5f307bf882fe2331dbeeaecb347b4bd6c197f"
+          bash -n tunnel-checker.sh
+          bash -n install.sh
+          bash tests/smoke.sh
+
+      - name: Commit exact repair and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/one-shot-transfer-repair.yml
+          git add tunnel-checker.sh
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: preserve exact validated source'
+          git push origin HEAD:fix/issue-5-api-download-fallback

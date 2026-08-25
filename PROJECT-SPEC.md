@@ -12,6 +12,8 @@ This file is the canonical source for durable project intent. Live work belongs 
 
 A user can install Tunnel Checker with one command on both endpoints, identify each endpoint as Iran or Foreign, prepare either endpoint as a temporary test target, run practical diagnostics from both sides, and receive concise evidence-based guidance about tunnel suitability.
 
+The tool must not stop at "ping works" or "the TCP port opens" when real sustained data transfer is unhealthy. When normal throughput tests fail or stall, bounded independent evidence should distinguish an application/test-protocol failure from a broader TCP/UDP data-path failure when the peer and environment can support that distinction.
+
 ## Supported environment
 
 - Debian and Ubuntu Linux.
@@ -25,7 +27,7 @@ The normal workflow is deliberately SSH-free.
 
 1. Install Tunnel Checker on both endpoints.
 2. On first interactive launch, identify the local endpoint as `Iran` or `Foreign`; persist that choice and allow changing it later.
-3. Prepare endpoint B as a temporary `iperf3` test target.
+3. Prepare endpoint B as a temporary test target.
 4. Run Full Test from endpoint A toward B.
 5. Stop/swap the target role.
 6. Prepare endpoint A as the test target.
@@ -41,7 +43,7 @@ The normal workflow is deliberately SSH-free.
 - Support update from the management menu.
 - Provide an uninstaller.
 - Uninstall only files owned by Tunnel Checker; do not remove shared packages.
-- Support GitHub-hosted source plus a practical CDN fallback for networks where `raw.githubusercontent.com` is inaccessible.
+- Support the official GitHub Contents API as an independent download path, with GitHub Raw and a practical CDN fallback for restricted networks.
 
 ## Management menu
 
@@ -49,7 +51,7 @@ The role-aware terminal menu should provide:
 
 1. Full test from the current endpoint toward its peer.
 2. Quick test.
-3. Prepare the current endpoint as a temporary `iperf3` test target.
+3. Prepare the current endpoint as a temporary test target.
 4. Stop the test target.
 5. Show test-target status.
 6. Change endpoint role.
@@ -66,7 +68,7 @@ The Full Test should cover practical failure modes that can make a tunnel fail e
 
 - Peer resolution/reachability and local route/source/interface.
 - ICMP packet loss, average RTT, and RTT variation.
-- TCP reachability of the `iperf3` control port.
+- `iperf3` service/control reachability derived from a real bounded protocol session rather than a raw fake-client hit on the active service socket.
 - TCP single-stream throughput in both data directions.
 - TCP parallel-stream throughput in both data directions.
 - TCP retransmission information exposed by `iperf3`.
@@ -75,11 +77,15 @@ The Full Test should cover practical failure modes that can make a tunnel fail e
 - ICMP/TCP/UDP MTR path analysis with destination loss summarized separately from raw intermediate-hop behavior.
 - `tracepath` path-MTU information where available.
 - IPv4 DF/PMTU discovery with bounded probes.
-- Local interface packet/error/drop counters around the active test window.
+- Local interface packet/error/drop counters around the active test window, including enough packet-delta context to interpret drop severity responsibly.
 - Detection of meaningful directional performance asymmetry.
-- Clear distinction between a blocked/unavailable diagnostic, a tool/protocol failure, and a measured bad network result.
+- Clear distinction between a blocked/unavailable diagnostic, a tool/protocol failure, a sustained-transfer stall, and a measured bad network result.
+- When `iperf3` TCP data fails or stalls despite a reachable service/control session, a bounded protocol-independent TCP continuity diagnostic on an isolated auxiliary socket/port when peer support is available.
+- When UDP suitability would otherwise be unknown because an `iperf3` TCP control session failed, an independent bounded UDP-path diagnostic when peer support is available.
 
 Intermediate MTR probe loss must not be treated as end-to-end packet loss when the destination and later hops remain healthy.
+
+MTR/control/path probes must not intentionally reuse the active `iperf3` application socket in a way that creates fake clients, misleading server errors, or ambiguity about whether the real data test failed. Use isolated probe semantics/ports or derive the required evidence from the real application session.
 
 ## Test safety
 
@@ -87,6 +93,9 @@ Intermediate MTR probe loss must not be treated as end-to-end packet loss when t
 - The user chooses or accepts an expected tunnel bandwidth used to bound active tests.
 - A temporary `iperf3` server must automatically stop after a bounded lifetime.
 - Starting the server must state that TCP/UDP on the selected port must be reachable from the peer and that `iperf3` has no authentication.
+- Temporary target startup must fail closed unless the requested service socket is actually bound by the expected `iperf3` process; stale PID state or a parent `timeout` process alone is not proof that the listener is healthy.
+- Occupied ports and bind/listener failures must be reported clearly without claiming the test target is running.
+- Any auxiliary TCP/UDP diagnostic listener must be separate from the live `iperf3` protocol socket, bounded, explicit, and removed/stopped with the same ownership discipline as the normal temporary target.
 - Tunnel Checker must not silently change firewall rules, routing, sysctl, tunnel configuration, or provider settings.
 - Unsupported tools/flags must degrade gracefully.
 
@@ -103,7 +112,11 @@ The concise result section should show:
 - overall verdict;
 - concise recommendations derived from observed evidence.
 
-A reachable TCP control port is not proof that an `iperf3` data test succeeded. When an active data test fails, surface a useful bounded error reason rather than silently turning it into `N/A`.
+A reachable TCP control/service path is not proof that an `iperf3` data test succeeded. When an active data test fails, surface a useful bounded error reason rather than silently turning it into `N/A`.
+
+A failed `iperf3 -u` run is not, by itself, proof that the UDP data path is bad when the failure may come from `iperf3`'s TCP control session. UDP tunnel suitability must stay `UNKNOWN` unless UDP-specific evidence exists.
+
+When an independent bounded continuity check confirms that TCP establishes but sustained transfer repeatedly stalls, the TCP tunnel/proxy use case may be `UNSUITABLE` even if overall evidence remains incomplete. Do not hide a confirmed data-path failure behind a generic `UNKNOWN` merely because unrelated evidence is missing.
 
 Loaded-latency results are valid only when the tool verifies that a real `iperf3` load was created. If essential TCP/UDP evidence is missing, the run must be `INCOMPLETE`, confidence must be low, and no authoritative numeric score should be shown.
 
@@ -120,11 +133,11 @@ At the end of a Full Test, include a compact evidence-based table indicating `SU
 - MTU-sensitive tunnels;
 - overall endpoint pair.
 
-Missing required evidence must produce `UNKNOWN`, not a guessed suitability result.
+Missing required evidence must produce `UNKNOWN`, not a guessed suitability result, except that a separately confirmed failure for one specific use case may mark that use case `UNSUITABLE` while unrelated use cases remain `UNKNOWN`.
 
 ## Quick test
 
-Quick Test should remain deliberately lightweight and include high-signal checks such as route/reachability, a short ping sample, TCP control reachability, short TCP throughput in both data directions when available, and a concise verdict. It does not need the full UDP/path suite.
+Quick Test should remain deliberately lightweight and include high-signal checks such as route/reachability, a short ping sample, short TCP throughput in both data directions when available, and a concise verdict. It does not need the full UDP/path/fallback-diagnostic suite.
 
 ## User experience
 
@@ -151,10 +164,13 @@ The current product outcome is complete when:
 1. Fresh supported hosts can install the tool using the documented one-line installer.
 2. First interactive launch identifies and persists Iran/Foreign endpoint role.
 3. The menu clearly reflects current role and test direction.
-4. Either endpoint can run a bounded temporary `iperf3` target.
+4. Either endpoint can run a bounded temporary `iperf3` target with verified listener ownership and clear bind-conflict handling.
 5. Quick/Full tests run without destructive network changes.
 6. Full Test measures all required available signals and clearly distinguishes failed/unavailable evidence.
 7. Missing essential data yields `INCOMPLETE` rather than a misleading numeric score.
 8. The result includes concise metric, suitability, confidence, recommendation, and use-case tables plus optional raw route details.
 9. The documented standard workflow measures both endpoint perspectives without SSH.
 10. Update/uninstall flows preserve unrelated/shared system state.
+11. Full Test does not create misleading `iperf3` fake-client errors through its own reachability or MTR probes.
+12. When `iperf3` TCP stalls and peer support exists, the tool can independently distinguish an `iperf3`-specific failure from a broader sustained TCP data-path failure.
+13. UDP tunnel suitability is based on UDP-specific evidence rather than being inferred from a failed TCP control path.

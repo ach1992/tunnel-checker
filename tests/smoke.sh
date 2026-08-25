@@ -7,7 +7,8 @@ bash -n "$ROOT/install.sh"
 [[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.4.0" ]]
 
 grep -Fq 'server-pair readiness tester' "$ROOT/PROJECT-SPEC.md"
-grep -Fq 'this server pair and direction' "$ROOT/README.md"
+grep -Fq 'tested pair, direction, and ports' "$ROOT/README.md"
+grep -Fq 'protocol-specific filtering may differ' "$ROOT/tunnel-checker.sh"
 grep -Fq 'TRY ANOTHER SERVER' "$ROOT/README.md"
 ! grep -Eq '(^|[[:space:]])mtr([[:space:]]|$)' "$ROOT/tunnel-checker.sh"
 ! grep -Eq '(^|[[:space:]])tracepath([[:space:]]|$)' "$ROOT/tunnel-checker.sh"
@@ -16,6 +17,10 @@ grep -Fq 'TRY ANOTHER SERVER' "$ROOT/README.md"
 ! grep -q 'iputils-tracepath' "$ROOT/install.sh"
 ! grep -q 'jq' "$ROOT/install.sh"
 grep -q 'socat' "$ROOT/install.sh"
+grep -Fq 'GOOD|EXCELLENT|USE|HIGH|RUNNING|READY' "$ROOT/tunnel-checker.sh"
+grep -Fq 'LEGACY_SERVER_LOG="$LOG_DIR/iperf3.log"' "$ROOT/tunnel-checker.sh"
+grep -Fq 'LEGACY_TCP_LOG="$LOG_DIR/tcp-diag.log"' "$ROOT/tunnel-checker.sh"
+grep -Fq 'LEGACY_UDP_LOG="$LOG_DIR/udp-diag.log"' "$ROOT/tunnel-checker.sh"
 
 export NO_COLOR=1
 export TUNNEL_CHECKER_SOURCE_ONLY=1
@@ -25,6 +30,7 @@ source "$ROOT/tunnel-checker.sh"
 ROLE=iran
 set_peer_role
 [[ "$(forward_label)" == "IRAN->FOREIGN" ]]
+[[ $UDP_PACKET_BYTES -eq 1200 ]]
 
 banner_out="$({ ip(){ printf '%s\n' '1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.55 uid 0'; }; banner; })"
 grep -Fq 'Fast server-pair tunnel readiness' <<<"$banner_out"
@@ -43,6 +49,10 @@ TCP_BYTES_RECV=3125000
 TCP_MBPS=50
 UDP_SENT=20
 UDP_RECV=20
+UDP_PROBE_LOSS=0
+UDP_BULK_SENT=240000
+UDP_BULK_RECV=240000
+UDP_BULK_LOSS=0
 UDP_LOSS=0
 PMTU_VALUE=1500
 IFACE_PACKETS=5000
@@ -54,6 +64,7 @@ compute_score
 [[ $FINAL_VERDICT == EXCELLENT ]]
 [[ $FINAL_CONFIDENCE == HIGH ]]
 [[ $FINAL_RECOMMENDATION == USE ]]
+[[ "$(signal_state_udp)" == GOOD ]]
 
 TCP_STATE=STALL
 TCP_BYTES_RECV=8192
@@ -69,11 +80,23 @@ TCP_STATE=HEALTHY
 TCP_BYTES_RECV=$TCP_BYTES_SENT
 TCP_MBPS=50
 UDP_RECV=0
+UDP_PROBE_LOSS=100
+UDP_BULK_LOSS=""
 UDP_LOSS=100
 compute_score
 [[ $FINAL_SCORE -le 69 ]]
 [[ $FINAL_VERDICT == CAUTION ]]
 [[ $FINAL_RECOMMENDATION == CAUTION ]]
+[[ "$(signal_state_udp)" == BAD ]]
+
+UDP_RECV=20
+UDP_PROBE_LOSS=0
+UDP_BULK_LOSS=12
+UDP_LOSS=12
+compute_score
+[[ $FINAL_SCORE -le 69 ]]
+[[ $FINAL_RECOMMENDATION == CAUTION ]]
+[[ "$(signal_state_udp)" == BAD ]]
 
 TEST_MODE=quick
 PING_LOSS=0
@@ -83,6 +106,10 @@ TCP_STATE=HEALTHY
 TCP_MBPS=50
 UDP_SENT=5
 UDP_RECV=5
+UDP_PROBE_LOSS=0
+UDP_BULK_SENT=0
+UDP_BULK_RECV=0
+UDP_BULK_LOSS=""
 UDP_LOSS=0
 PMTU_VALUE=""
 IFACE_PACKETS=1000

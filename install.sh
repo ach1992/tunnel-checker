@@ -31,7 +31,7 @@ packages=(
     iputils-ping
     iputils-tracepath
     iproute2
-    netcat-openbsd
+    socat
     jq
     coreutils
 )
@@ -43,7 +43,7 @@ command -v ping >/dev/null 2>&1 || missing+=(iputils-ping)
 command -v tracepath >/dev/null 2>&1 || missing+=(iputils-tracepath)
 command -v ip >/dev/null 2>&1 || missing+=(iproute2)
 command -v ss >/dev/null 2>&1 || missing+=(iproute2)
-command -v nc >/dev/null 2>&1 || missing+=(netcat-openbsd)
+command -v socat >/dev/null 2>&1 || missing+=(socat)
 command -v jq >/dev/null 2>&1 || missing+=(jq)
 command -v timeout >/dev/null 2>&1 || missing+=(coreutils)
 

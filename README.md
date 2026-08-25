@@ -68,23 +68,31 @@ This second pass matters because `iperf3 -R` can send data in the reverse direct
 
 ## Firewall requirement
 
-The temporary target uses `iperf3` (default port `5201`). TCP and UDP on the selected port must be reachable from the other endpoint.
+The temporary target uses three isolated ports derived from the selected `iperf3` base port (default `5201`):
 
-Tunnel Checker deliberately does **not** modify firewall rules. `iperf3` has no authentication, so restrict the test port to the peer IP when practical. The server is time-bounded and stops automatically.
+- base port: `iperf3` TCP control and TCP/UDP data (`5201` by default);
+- base + 1: Tunnel Checker-owned TCP continuity/probe listener (`5202` by default);
+- base + 2: Tunnel Checker-owned UDP continuity/probe listener (`5203` by default).
+
+Choose a base port from `1` through `65533`. The required TCP/UDP ports must be reachable from the testing peer.
+
+Tunnel Checker deliberately does **not** modify firewall rules. These listeners are unauthenticated test endpoints, so restrict all three ports to the peer IP when practical. Every listener is time-bounded, ownership-checked, and stopped automatically.
 
 ## What Full Test measures
 
 - IPv4 resolution and route/source/interface selection.
 - ICMP packet loss, average RTT, and variation.
-- `iperf3` control-port reachability.
+- `iperf3` reachability through a real, bounded protocol session; the active service port is not hit with a raw fake-client probe.
 - TCP single-stream throughput in both data directions.
 - TCP four-stream throughput in both data directions.
 - TCP retransmission counters when available.
+- Bounded `iperf3`-independent TCP echo continuity when normal TCP evidence fails or peer-support confirmation is needed.
 - UDP loss/jitter in both data directions at 25%, 50%, and 100% of the requested tunnel bandwidth.
+- Independent UDP echo evidence when `iperf3` UDP evidence is unavailable, so a TCP-control failure is not misclassified as proof of a bad UDP path.
 - RTT increase under **verified** upload/download load.
-- Local interface packet errors/drops around the active test window.
+- Local interface packet errors/drops around the active test window, including the packet-delta denominator and sample adequacy before rate-based interpretation.
 - PMTU with IPv4 DF probes and `tracepath`.
-- MTR using ICMP, TCP, and UDP probes.
+- MTR using ICMP, TCP, and UDP probes; TCP/UDP path probes use the isolated diagnostic ports rather than the active `iperf3` service socket.
 - Destination loss summarized separately from intermediate-hop probe loss.
 
 Raw MTR/trace output is shown after the concise assessment for deeper diagnosis.
@@ -114,7 +122,9 @@ Evidence confidence: LOW
 
 It does **not** turn missing data into a misleading numerical score.
 
-A reachable `iperf3` port only proves that a socket/control path is reachable. If the real data test fails, Tunnel Checker reports a bounded error reason so version mismatch, busy server, protocol failure, or other tool/network problems remain visible.
+A successful bounded `iperf3` probe establishes protocol reachability without opening a fake client connection with `nc -z`. It still does **not** prove that sustained data is healthy. If normal TCP data fails, Tunnel Checker can run an isolated TCP echo continuity test; a partial transfer that stops making progress until timeout is reported explicitly as a sustained TCP stall.
+
+If that independent TCP test confirms a sustained stall, the **TCP tunnels / proxies** use case can be `UNSUITABLE` even while the overall run remains `INCOMPLETE`. Missing or unrelated UDP evidence is not automatically downgraded with it.
 
 ### Ping looks good but sustained data stalls
 
@@ -131,13 +141,15 @@ The same stall was reproduced with a protocol-independent raw TCP transfer, with
 
 Do **not** conclude that UDP/WireGuard is bad solely because an `iperf3 -u` test failed in this situation: `iperf3` uses a TCP control session for UDP tests, so a broken control/data session can make UDP evidence unavailable without proving that the UDP path itself is bad.
 
-The current `v0.2.1` implementation correctly keeps such a run `INCOMPLETE`, but it does not yet automate all of the independent TCP/UDP continuity checks needed to classify the failure more precisely. That hardening is tracked in [Issue #7](https://github.com/ach1992/tunnel-checker/issues/7).
+Starting with `v0.3.0`, Full Test automates the bounded independent TCP continuity check on the peer's isolated diagnostic listener. A confirmed partial transfer followed by no progress until the outer timeout is reported as a sustained TCP data-path stall. If independent TCP completes while `iperf3` fails, the report instead preserves that distinction rather than blaming the general TCP path.
+
+When `iperf3` UDP evidence is missing, `v0.3.0` also uses an isolated UDP echo diagnostic when peer support can be confirmed. A failed `iperf3 -u` run by itself never marks UDP/WireGuard unsuitable.
 
 ### MTR warning
 
 Loss on an intermediate router is not automatically real packet loss. Routers commonly rate-limit ICMP/TCP/UDP probe replies. If later hops and the final destination remain at 0% loss, the intermediate percentage should not be interpreted as end-to-end loss.
 
-The `v0.2.1` implementation also reuses the active `iperf3` port for some reachability/MTR probes. Those probes can produce server-side `iperf3` messages such as `unable to receive cookie`; these messages may be probe noise rather than the root data-transfer failure. Issue #7 tracks isolating path probes from the active application socket.
+Starting with `v0.3.0`, TCP/UDP MTR and `tracepath` use the isolated diagnostic ports rather than the active `iperf3` service socket. Full Test therefore no longer creates fake `iperf3` clients through its own reachability or path-probe logic.
 
 ## Menu
 
@@ -223,7 +235,7 @@ sudo tunnel-checker --update
 sudo tunnel-checker --uninstall
 ```
 
-The uninstaller removes Tunnel Checker-owned files/reports only. Shared OS packages such as `iperf3`, `mtr`, `jq`, and `iproute2` remain installed.
+The uninstaller removes Tunnel Checker-owned files/reports only. Shared OS packages such as `iperf3`, `socat`, `mtr`, `jq`, and `iproute2` remain installed.
 
 ## Project specification
 

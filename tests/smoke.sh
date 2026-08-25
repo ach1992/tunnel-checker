@@ -77,10 +77,11 @@ iperf_probe
 [[ ${STATES[0]} == GOOD ]]
 PATH=$old_path
 
-[[ "$(classify_tcp_continuity 524288 524288 0 0 0)" == HEALTHY ]]
-[[ "$(classify_tcp_continuity 524288 76000 76000 76000 124)" == SUSTAINED_STALL ]]
-[[ "$(classify_tcp_continuity 524288 120000 50000 120000 124)" == DEGRADED ]]
-[[ "$(classify_tcp_continuity 524288 0 0 0 124)" == UNAVAILABLE ]]
+[[ "$(classify_tcp_continuity 524288 524288 143 0)" == HEALTHY ]]
+[[ "$(classify_tcp_continuity 524288 76000 124 4)" == SUSTAINED_STALL ]]
+[[ "$(classify_tcp_continuity 524288 120000 124 0)" == DEGRADED ]]
+[[ "$(classify_tcp_continuity 524288 120000 1 5)" == DEGRADED ]]
+[[ "$(classify_tcp_continuity 524288 0 124 10)" == UNAVAILABLE ]]
 
 original_pid_file=$PID_FILE
 original_port_file=$PORT_FILE

@@ -47,6 +47,14 @@ set_peer_role
 [[ "$(forward_label)" == "IRAN->FOREIGN" ]]
 [[ "$(reverse_label)" == "FOREIGN->IRAN" ]]
 
+banner_out="$(
+  ip(){ printf '%s\n' '1.1.1.1 via 192.0.2.1 dev eth0 src 192.0.2.55 uid 0'; }
+  banner
+)"
+grep -Fq 'Repo: https://github.com/ach1992/tunnel-checker' <<<"$banner_out"
+grep -Fq 'Local IPv4: 192.0.2.55' <<<"$banner_out"
+while IFS= read -r line;do [[ ${#line} -eq 90 ]];done < <(grep -E '^[+|]' <<<"$banner_out")
+
 PEER_IP=203.0.113.10
 cat >"$sample_mtr" <<'MTR'
   1.|-- 192.0.2.1       70.0% 20 1.0 1.0 1.0 1.0 0.0
@@ -61,8 +69,17 @@ JSON
 
 cat >"$fake_bin/iperf3" <<'IPERF'
 #!/usr/bin/env bash
+count=0
+[[ -r ${IPERF_COUNT_FILE:-} ]]&&count=$(cat "$IPERF_COUNT_FILE")
+count=$((count+1))
+printf '%s\n' "$count" >"$IPERF_COUNT_FILE"
+printf '%s\n' "$*" >"$IPERF_ARGS_FILE"
 printf '%s\n' '[  5] local 192.0.2.10 port 40000 connected to 203.0.113.10 port 5201'
-exit 1
+case ${IPERF_FAKE_MODE:-incomplete} in
+  success) exit 0;;
+  probe-then-fail) ((count==1))&&exit 0||exit 1;;
+  *) exit 1;;
+esac
 IPERF
 chmod +x "$fake_bin/iperf3"
 old_path=$PATH
@@ -70,12 +87,44 @@ PATH="$fake_bin:$PATH"
 TMP_DIR=$probe_tmp
 PEER_IP=203.0.113.10
 IPERF_PORT=5201
-NAMES=();FWD=();REV=();STATES=();RECS=();IPERF_REACHABLE=0
-iperf_probe
-[[ $IPERF_REACHABLE -eq 1 ]]
+export IPERF_COUNT_FILE="$probe_tmp/iperf-count"
+export IPERF_ARGS_FILE="$probe_tmp/iperf-args"
+
+printf '0\n' >"$IPERF_COUNT_FILE"
+export IPERF_FAKE_MODE=incomplete
+NAMES=();FWD=();REV=();STATES=();RECS=();IPERF_REACHABLE=0;IPERF_CONNECTED=0;IPERF_REUSABLE=0
+! iperf_probe
+[[ $IPERF_CONNECTED -eq 1 ]]
+[[ $IPERF_REACHABLE -eq 0 ]]
+[[ $IPERF_REUSABLE -eq 0 ]]
 [[ ${NAMES[0]} == 'iperf3 protocol session' ]]
+[[ ${STATES[0]} == WARN ]]
+grep -Eq '(^|[[:space:]])-n[[:space:]]+4K([[:space:]]|$)' "$IPERF_ARGS_FILE"
+
+printf '0\n' >"$IPERF_COUNT_FILE"
+export IPERF_FAKE_MODE=success
+NAMES=();FWD=();REV=();STATES=();RECS=();IPERF_REACHABLE=0;IPERF_CONNECTED=0;IPERF_REUSABLE=0
+iperf_probe
+[[ $IPERF_CONNECTED -eq 1 ]]
+[[ $IPERF_REACHABLE -eq 1 ]]
+[[ $IPERF_REUSABLE -eq 1 ]]
 [[ ${STATES[0]} == GOOD ]]
+
+printf '0\n' >"$IPERF_COUNT_FILE"
+export IPERF_FAKE_MODE=probe-then-fail
+TEST_MODE=quick
+NAMES=();FWD=();REV=();STATES=();RECS=();IPERF_REACHABLE=0;IPERF_CONNECTED=0;IPERF_REUSABLE=0
+TCP_SINGLE_FWD="";TCP_SINGLE_REV="";TCP_ERROR_FWD="";TCP_ERROR_REV=""
+tcp_tests 1
+[[ "$(cat "$IPERF_COUNT_FILE")" == 2 ]]
+[[ $IPERF_REUSABLE -eq 0 ]]
+[[ ${NAMES[1]} == 'TCP single stream' ]]
+[[ ${FWD[1]} == FAILED ]]
+[[ ${REV[1]} == N/A ]]
+[[ ${STATES[1]} == FAILED ]]
 PATH=$old_path
+unset IPERF_COUNT_FILE IPERF_ARGS_FILE IPERF_FAKE_MODE
+TEST_MODE=full
 
 [[ "$(classify_tcp_continuity 524288 524288 143 0)" == HEALTHY ]]
 [[ "$(classify_tcp_continuity 524288 76000 124 4)" == SUSTAINED_STALL ]]

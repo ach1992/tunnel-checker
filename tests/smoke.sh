@@ -5,8 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash -n "$ROOT/tunnel-checker.sh"
 bash -n "$ROOT/install.sh"
-[[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.2.0" ]]
+[[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.2.1" ]]
 ! grep -q 'openssh-client' "$ROOT/tunnel-checker.sh"
+grep -q 'api.github.com/repos/$REPO/contents/tunnel-checker.sh?ref=main' "$ROOT/tunnel-checker.sh"
+grep -q 'application/vnd.github.raw+json' "$ROOT/tunnel-checker.sh"
+grep -q 'api.github.com/repos/${REPO}/contents/tunnel-checker.sh?ref=main' "$ROOT/install.sh"
+grep -q 'application/vnd.github.raw+json' "$ROOT/install.sh"
 
 export NO_COLOR=1
 export TUNNEL_CHECKER_SOURCE_ONLY=1

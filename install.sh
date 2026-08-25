@@ -14,7 +14,12 @@ CDN_URL="https://cdn.jsdelivr.net/gh/${REPO}@main/tunnel-checker.sh"
 say(){ printf '%s\n' "$*"; }
 fail(){ printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-[[ ${EUID:-$(id -u)} -eq 0 ]] || fail "Run the installer as root, for example: curl ... | sudo bash"
+if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+  if command -v sudo >/dev/null 2>&1; then
+    fail "Root privileges are required. Re-run the installer through sudo bash."
+  fi
+  fail "Root privileges are required and sudo is unavailable. Log in as root and run the installer again."
+fi
 [[ -r /etc/os-release ]] || fail "Cannot identify this Linux distribution."
 . /etc/os-release
 [[ ${ID:-} == ubuntu || ${ID:-} == debian || ${ID_LIKE:-} == *debian* ]] || fail "Automatic installation currently supports Debian/Ubuntu only."
@@ -65,5 +70,9 @@ install -m 0755 "$tmp" "$INSTALL_PATH"
 ln -sfn "$INSTALL_PATH" "$BIN_PATH"
 version=$($BIN_PATH --version 2>/dev/null || true)
 say "Tunnel Checker ${version:-installed} is ready."
-say "Run: sudo tunnel-checker"
+if [[ -n ${SUDO_USER:-} && ${SUDO_USER:-root} != root ]]; then
+  say "Run: sudo tunnel-checker"
+else
+  say "Run: tunnel-checker"
+fi
 say "The tool never opens firewall ports automatically."

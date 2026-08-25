@@ -8,26 +8,34 @@ A good ping is not enough. Iran-side filtering/routing can make one Foreign IP w
 
 ## Install
 
-Recommended for restricted networks:
+Recommended one-line installer (works both from a root shell and from a sudo-capable user):
 
 ```bash
-curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | sudo bash
+curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | { if [ "$(id -u)" -eq 0 ]; then bash; elif command -v sudo >/dev/null 2>&1; then sudo bash; else printf '%s\n' 'ERROR: root privileges are required and sudo is unavailable. Log in as root and retry.' >&2; exit 1; fi; }
 ```
 
-Alternatives:
+This supports minimal Debian/Ubuntu images that do not install `sudo` by default. If the current shell is already `root`, no `sudo` package is required.
+
+Alternative download sources below assume a root shell. From a non-root account with `sudo`, replace the final `bash` with `sudo bash`.
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/ach1992/tunnel-checker@main/install.sh | sudo bash
+curl -fsSL https://cdn.jsdelivr.net/gh/ach1992/tunnel-checker@main/install.sh | bash
 ```
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ach1992/tunnel-checker/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ach1992/tunnel-checker/main/install.sh | bash
 ```
 
 Run:
 
 ```bash
 sudo tunnel-checker
+```
+
+If the current shell is already `root`, omit `sudo`:
+
+```bash
+tunnel-checker
 ```
 
 On first run select whether the machine is the **Iran** or **Foreign** endpoint.

@@ -85,10 +85,10 @@ choose_role(){
 ensure_role(){ load_role; [[ -n $ROLE ]] || choose_role; }
 banner(){
   printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  printf '%b| Tunnel Check v%-70s |%b\n' "$BL$B" "$VERSION" "$R"
+  printf '%b| Tunnel Checker v%-70s |%b\n' "$BL$B" "$VERSION" "$R"
   printf '%b| Two-sided tunnel-link diagnostics %-49s |%b\n' "$BL$B" '' "$R"
-  printf '%b+-----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  if [[ -n $ROLE ]]; then printf ' Endpoint: %b%se%b    Peer: %b%s%b    Test direction: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R" "$B" "$(forward_label)" "$R"; fi
+  printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
+  if [[ -n $ROLE ]]; then printf ' Endpoint: %b%s%b    Peer: %b%s%b    Test direction: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R" "$B" "$(forward_label)" "$R"; fi
 }
 
 missing_packages(){

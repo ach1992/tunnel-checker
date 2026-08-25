@@ -8,23 +8,33 @@ A good ping is not enough. Iran-side filtering/routing can make one Foreign IP w
 
 ## Install
 
-Recommended for restricted networks:
+Recommended one-line installer (works both from a root shell and from a sudo-capable user):
 
 ```bash
-curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | sudo bash
+curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | { if [ "$(id -u)" -eq 0 ]; then bash; elif command -v sudo >/dev/null 2>&1; then sudo bash; else printf '%s\n' 'ERROR: root privileges are required and sudo is unavailable. Log in as root and retry.' >&2; exit 1; fi; }
 ```
 
-Alternatives:
+This is suitable for minimal Debian/Ubuntu images that do not install `sudo` by default. If the current shell is already `root`, no `sudo` package is required.
+
+Alternative download sources use the same privilege rule. From a root shell:
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/ach1992/tunnel-checker@main/install.sh | sudo bash
+curl -fsSL https://cdn.jsdelivr.net/gh/ach1992/tunnel-checker@main/install.sh | bash
 ```
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ach1992/tunnel-checker/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ach1992/tunnel-checker/main/install.sh | bash
 ```
 
-Run:
+From a non-root account with `sudo`, replace the final `bash` with `sudo bash`.
+
+Run from a root shell:
+
+```bash
+tunnel-checker
+```
+
+Or from a non-root account with `sudo`:
 
 ```bash
 sudo tunnel-checker
@@ -34,10 +44,10 @@ On first run select whether the machine is the **Iran** or **Foreign** endpoint.
 
 ## Normal workflow
 
-On the target endpoint:
+On the target endpoint, use `tunnel-checker --server` when already root, or prefix the command with `sudo` from a sudo-capable non-root account:
 
 ```bash
-sudo tunnel-checker --server
+tunnel-checker --server
 ```
 
 Default ports are:
@@ -50,7 +60,7 @@ Tunnel Checker does not modify firewall rules. Allow these ports only from the p
 On the other endpoint:
 
 ```bash
-sudo tunnel-checker --full
+tunnel-checker --full
 ```
 
 The readiness test normally checks:
@@ -117,31 +127,41 @@ The TCP echo transfers payload both ways on one connection. If you need to verif
 
 ## Quick check
 
+From a root shell:
+
 ```bash
-sudo tunnel-checker --quick
+tunnel-checker --quick
 ```
+
+Prefix with `sudo` when running from a sudo-capable non-root account.
 
 This uses fewer probes and a smaller TCP payload. It is faster but intentionally capped at lower evidence confidence and skips the sustained UDP sample/PMTU search.
 
 ## Status / stop / last result
 
 ```bash
-sudo tunnel-checker --status
-sudo tunnel-checker --stop
-sudo tunnel-checker --last
+tunnel-checker --status
+tunnel-checker --stop
+tunnel-checker --last
 ```
+
+Prefix these commands with `sudo` when running from a sudo-capable non-root account.
 
 ## Update
 
 ```bash
-sudo tunnel-checker --update
+tunnel-checker --update
 ```
+
+Prefix with `sudo` when running from a sudo-capable non-root account.
 
 ## Uninstall
 
 ```bash
-sudo tunnel-checker --uninstall
+tunnel-checker --uninstall
 ```
+
+Prefix with `sudo` when running from a sudo-capable non-root account.
 
 The uninstaller removes Tunnel Checker-owned files/processes only. Shared OS packages are left installed. v0.4 also safely cleans obsolete Tunnel Checker-owned runtime files/logs from v0.3 when stopping or uninstalling a target.
 

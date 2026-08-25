@@ -114,11 +114,30 @@ Evidence confidence: LOW
 
 It does **not** turn missing data into a misleading numerical score.
 
-A reachable `iperf3` port only proves that the control socket is open. If the real data test fails, Tunnel Checker reports a bounded error reason so version mismatch, busy server, protocol failure, or other tool/network problems are visible.
+A reachable `iperf3` port only proves that a socket/control path is reachable. If the real data test fails, Tunnel Checker reports a bounded error reason so version mismatch, busy server, protocol failure, or other tool/network problems remain visible.
+
+### Ping looks good but sustained data stalls
+
+A healthy ping does not prove that a tunnel-quality data flow is healthy. A real-world endpoint pair used while developing Tunnel Checker produced all of the following at the same time:
+
+- `0%` ICMP loss;
+- about `85 ms` stable RTT;
+- PMTU `1500`;
+- `0%` final-destination loss in ICMP/TCP/UDP MTR;
+- successful TCP connection establishment;
+- but only a few tens of KiB of real TCP data before the congestion window collapsed and the transfer stalled until timeout.
+
+The same stall was reproduced with a protocol-independent raw TCP transfer, with a small TCP MSS (`536`), and on a separate high TCP port. That combination is strong evidence of a sustained TCP data-path problem under the tested conditions rather than an idle-ping, large-MTU, `iperf3`-parsing, or single-port-only problem.
+
+Do **not** conclude that UDP/WireGuard is bad solely because an `iperf3 -u` test failed in this situation: `iperf3` uses a TCP control session for UDP tests, so a broken control/data session can make UDP evidence unavailable without proving that the UDP path itself is bad.
+
+The current `v0.2.1` implementation correctly keeps such a run `INCOMPLETE`, but it does not yet automate all of the independent TCP/UDP continuity checks needed to classify the failure more precisely. That hardening is tracked in [Issue #7](https://github.com/ach1992/tunnel-checker/issues/7).
 
 ### MTR warning
 
 Loss on an intermediate router is not automatically real packet loss. Routers commonly rate-limit ICMP/TCP/UDP probe replies. If later hops and the final destination remain at 0% loss, the intermediate percentage should not be interpreted as end-to-end loss.
+
+The `v0.2.1` implementation also reuses the active `iperf3` port for some reachability/MTR probes. Those probes can produce server-side `iperf3` messages such as `unable to receive cookie`; these messages may be probe noise rather than the root data-transfer failure. Issue #7 tracks isolating path probes from the active application socket.
 
 ## Menu
 

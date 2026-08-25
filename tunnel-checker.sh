@@ -160,6 +160,7 @@ ping_test(){
   row "ICMP avg RTT" "$(fmt "$PING_FWD_AVG" 2) ms" N/A "$(status_rtt "$PING_FWD_AVG")"
   row "ICMP RTT variation" "$(fmt "$PING_FWD_MDEV" 2) ms" N/A "$(status_jit "$PING_FWD_MDEV")"
   [[ -n $PING_FWD_LOSS ]]&&fcompare "$PING_FWD_LOSS" '>' 1&&rec "Packet loss is above 1%; expect retransmissions, stalls, or unstable tunnel latency."
+  return 0
 }
 
 iperf_probe(){
@@ -196,8 +197,8 @@ classify_tcp_continuity(){
   else printf UNAVAILABLE;fi
 }
 tcp_continuity_diag(){
-  [[ $TEST_MODE == full ]]||return
-  [[ -n $TCP_PATH_CLASS ]]&&return
+  [[ $TEST_MODE == full ]]||return 0
+  [[ -n $TCP_PATH_CLASS ]]&&return 0
   local payload="$TMP_DIR/tcp-diag.payload" out="$TMP_DIR/tcp-diag.out" er="$TMP_DIR/tcp-diag.err" token pid rc=0 sent recv st elapsed=0 last=0 current=0 stalled=0
   token="TCV03-${RANDOM}-${RANDOM}-"
   { printf '%s' "$token"; dd if=/dev/zero bs=1024 count=512 status=none; } >"$payload"
@@ -223,10 +224,11 @@ tcp_continuity_diag(){
     *) st=N/A;rec "Independent TCP continuity was unavailable; peer v0.3 diagnostic support or TCP $TCP_DIAG_PORT reachability could not be confirmed.";;
   esac
   row "Independent TCP continuity" "$TCP_DIAG_BYTES" N/A "$st"
+  return 0
 }
 udp_continuity_diag(){
-  [[ $TEST_MODE == full ]]||return
-  [[ -n $UDP_DIAG_STATE ]]&&return
+  [[ $TEST_MODE == full ]]||return 0
+  [[ -n $UDP_DIAG_STATE ]]&&return 0
   local i token out er good=0 st
   if ((TCP_DIAG_PEER==0));then tcp_continuity_diag;fi
   info "Independent UDP continuity on port $UDP_DIAG_PORT..."
@@ -248,12 +250,14 @@ udp_continuity_diag(){
     BAD) rec "Peer v0.3 diagnostics were confirmed over TCP but no UDP echo returned; this is UDP-specific negative evidence independent of iperf3's TCP control channel.";;
     UNKNOWN) rec "UDP-specific evidence is unavailable; an iperf3 UDP failure alone is not used to reject UDP/WireGuard suitability.";;
   esac
+  return 0
 }
 tcp_once(){
   local rev=$1 streams=$2 seconds=$3 f=$4 rc=0; local -a c=(iperf3 -c "$PEER_IP" -p "$IPERF_PORT" -P "$streams" -t "$seconds" -J)
   [[ $rev == 1 ]]&&c+=(-R); timeout $((seconds+15)) "${c[@]}" >"$f" 2>"$f.err"||rc=$?
   if ((rc!=0));then IPERF_REUSABLE=0;return 1;fi
   if ! jq -e '.end and (((.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//0)|tonumber) > 0)' "$f" >/dev/null 2>&1;then IPERF_REUSABLE=0;return 1;fi
+  return 0
 }
 tcp_mbps(){ jq -r '(.end.sum_received.bits_per_second//.end.sum.bits_per_second//.end.sum_sent.bits_per_second//empty)/1000000' "$1" 2>/dev/null; }
 tcp_ret(){ jq -r '.end.sum_sent.retransmits//empty' "$1" 2>/dev/null; }
@@ -262,7 +266,7 @@ tcp_tests(){
   if ! iperf_probe;then
     row "TCP single stream" N/A N/A N/A
     if [[ $TEST_MODE == full ]];then tcp_continuity_diag;row "TCP 4 parallel" N/A N/A N/A;row "TCP retransmits" N/A N/A N/A;fi
-    return
+    return 0
   fi
   f="$TMP_DIR/t1f"; r="$TMP_DIR/t1r"; info "TCP single-stream both directions..."
   if tcp_once 0 1 "$s" "$f";then TCP_SINGLE_FWD=$(tcp_mbps "$f");TCP_RETRANS_FWD=$(tcp_ret "$f");else TCP_ERROR_FWD=$(iperf_error "$f");rec "TCP $(forward_label) test failed: $TCP_ERROR_FWD";fi
@@ -273,12 +277,12 @@ tcp_tests(){
   fi
   if [[ -n $TCP_SINGLE_FWD && -n $TCP_SINGLE_REV ]];then st=$(combine_status "$(status_speed "$TCP_SINGLE_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_SINGLE_REV" "$EXPECTED_MBPS")");else st=FAILED;fi
   row "TCP single stream" "$([[ -n $TCP_SINGLE_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_FWD" 1)"||[[ -n $TCP_ERROR_FWD ]]&&printf FAILED||printf N/A)" "$([[ -n $TCP_SINGLE_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_SINGLE_REV" 1)"||[[ -n $TCP_ERROR_REV ]]&&printf FAILED||printf N/A)" "$st"
-  [[ $TEST_MODE == full ]]||return
+  [[ $TEST_MODE == full ]]||return 0
   if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then
     tcp_continuity_diag
     row "TCP 4 parallel" N/A N/A N/A
     row "TCP retransmits" "${TCP_RETRANS_FWD:-N/A}" "${TCP_RETRANS_REV:-N/A}" N/A
-    return
+    return 0
   fi
   f="$TMP_DIR/t4f"; r="$TMP_DIR/t4r"; info "TCP 4-stream both directions..."
   if tcp_once 0 4 "$s" "$f";then TCP_PAR_FWD=$(tcp_mbps "$f");fi
@@ -287,14 +291,15 @@ tcp_tests(){
   if [[ -n $TCP_PAR_FWD && -n $TCP_PAR_REV ]];then st=$(combine_status "$(status_speed "$TCP_PAR_FWD" "$EXPECTED_MBPS")" "$(status_speed "$TCP_PAR_REV" "$EXPECTED_MBPS")");else st=FAILED;fi
   row "TCP 4 parallel" "$([[ -n $TCP_PAR_FWD ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_FWD" 1)"||printf FAILED)" "$([[ -n $TCP_PAR_REV ]]&&printf '%s Mbps' "$(fmt "$TCP_PAR_REV" 1)"||((IPERF_REUSABLE==0))&&printf N/A||printf FAILED)" "$st"
   row "TCP retransmits" "${TCP_RETRANS_FWD:-N/A}" "${TCP_RETRANS_REV:-N/A}" N/A
-  if [[ -z $TCP_PAR_FWD || -z $TCP_PAR_REV ]];then tcp_continuity_diag;return;fi
+  if [[ -z $TCP_PAR_FWD || -z $TCP_PAR_REV ]];then tcp_continuity_diag;return 0;fi
   if [[ -n $TCP_PAR_FWD && -n $TCP_PAR_REV ]]; then local hi lo ratio; if fcompare "$TCP_PAR_FWD" '>=' "$TCP_PAR_REV"; then hi=$TCP_PAR_FWD;lo=$TCP_PAR_REV;else hi=$TCP_PAR_REV;lo=$TCP_PAR_FWD;fi; ratio=$(awk -v l="$lo" -v h="$hi" 'BEGIN{print l/h}'); fcompare "$ratio" '<' .5&&rec "TCP is strongly asymmetric; inspect provider routing, congestion, or shaping in the slower direction."; fi
+  return 0
 }
 
 loaded_latency(){
-  [[ $TEST_MODE == full ]]||return
-  if ((IPERF_REACHABLE!=1 || IPERF_REUSABLE!=1)) || [[ -z $PING_FWD_AVG ]];then row "Loaded RTT increase" N/A N/A N/A;return;fi
-  if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then row "Loaded RTT increase" N/A N/A N/A;rec "Loaded-latency test was skipped because the baseline iperf3 data test did not complete.";return;fi
+  [[ $TEST_MODE == full ]]||return 0
+  if ((IPERF_REACHABLE!=1 || IPERF_REUSABLE!=1)) || [[ -z $PING_FWD_AVG ]];then row "Loaded RTT increase" N/A N/A N/A;return 0;fi
+  if [[ -z $TCP_SINGLE_FWD || -z $TCP_SINGLE_REV ]];then row "Loaded RTT increase" N/A N/A N/A;rec "Loaded-latency test was skipped because the baseline iperf3 data test did not complete.";return 0;fi
   local rev label lf pf pid p loss avg md delta up=N/A down=N/A overall=N/A active=0 rc
   for rev in 0 1; do
     [[ $rev == 0 ]]&&label=upload||label=download; lf="$TMP_DIR/load-$label"; pf="$TMP_DIR/lping-$label"
@@ -306,10 +311,11 @@ loaded_latency(){
     p=$(parse_ping "$pf"); IFS='|' read -r loss avg md<<<"$p"; [[ -z $avg ]]&&continue; delta=$(awk -v a="$avg" -v b="$PING_FWD_AVG" 'BEGIN{d=a-b;if(d<0)d=0;print d}')
     active=$((active+1)); if [[ $rev == 0 ]];then LOAD_UP_DELTA=$delta;up="+$(fmt "$delta" 1) ms";else LOAD_DOWN_DELTA=$delta;down="+$(fmt "$delta" 1) ms";fi
   done
-  if ((active==0));then row "Loaded RTT increase" N/A N/A N/A;rec "Could not create a verified iperf3 load, so loaded latency was not scored.";return;fi
+  if ((active==0));then row "Loaded RTT increase" N/A N/A N/A;rec "Could not create a verified iperf3 load, so loaded latency was not scored.";return 0;fi
   local worst=0 v;for v in "${LOAD_UP_DELTA:-}" "${LOAD_DOWN_DELTA:-}";do [[ -n $v ]]&&fcompare "$v" '>' "$worst"&&worst=$v;done
   if ((active<2));then overall=N/A;elif fcompare "$worst" '<=' 15;then overall=GOOD;elif fcompare "$worst" '<=' 40;then overall=WARN;else overall=BAD;fi
   row "Loaded RTT increase" "$up" "$down" "$overall"; [[ $overall == BAD ]]&&rec "Latency rises sharply under load; queueing/bufferbloat or congestion can break tunnel responsiveness despite good idle ping."
+  return 0
 }
 
 udp_once(){
@@ -317,10 +323,11 @@ udp_once(){
   timeout 22 "${c[@]}" >"$f" 2>"$f.err"||rc=$?
   if ((rc!=0));then IPERF_REUSABLE=0;return 1;fi
   if ! jq -e '.end.sum and ((.end.sum.bits_per_second//0)>0)' "$f" >/dev/null 2>&1;then IPERF_REUSABLE=0;return 1;fi
+  return 0
 }
 udp_field(){ case $2 in mbps)jq -r '(.end.sum.bits_per_second//empty)/1000000' "$1";;loss)jq -r '.end.sum.lost_percent//empty' "$1";;jit)jq -r '.end.sum.jitter_ms//empty' "$1";;esac 2>/dev/null; }
 udp_tests(){
-  [[ $TEST_MODE == full ]]||return
+  [[ $TEST_MODE == full ]]||return 0
   local rate f r fm rm fl rl fj rj st
   if ((IPERF_REACHABLE==1 && IPERF_REUSABLE==1));then
     local -a rates=($((EXPECTED_MBPS/4)) $((EXPECTED_MBPS/2)) "$EXPECTED_MBPS");((rates[0]<1))&&rates[0]=1;((rates[1]<1))&&rates[1]=1
@@ -344,6 +351,7 @@ udp_tests(){
   [[ -n $UDP_ERROR_REV ]]&&rec "UDP $(reverse_label) iperf3 test failed: $UDP_ERROR_REV"
   if [[ -z $UDP_MAX_FWD_LOSS || -z $UDP_MAX_REV_LOSS || -z $UDP_MAX_FWD_JITTER || -z $UDP_MAX_REV_JITTER ]];then udp_continuity_diag;fi
   local w=0 v;for v in "${UDP_MAX_FWD_LOSS:-}" "${UDP_MAX_REV_LOSS:-}";do [[ -n $v ]]&&fcompare "$v" '>' "$w"&&w=$v;done;fcompare "$w" '>' 1&&rec "UDP loss exceeds 1% at the intended rate; lower the target load or prefer another route/server."
+  return 0
 }
 
 iface_stats(){
@@ -368,11 +376,12 @@ iface_delta(){
 
 mtr_dest_loss(){ local f=$1;awk -v ip="$PEER_IP" '$2==ip{x=$3;gsub("%","",x);v=x}END{print v}' "$f" 2>/dev/null; }
 path_tests(){
-  [[ $TEST_MODE == full ]]||return;local f="$TMP_DIR/tracepath.txt";info "tracepath and PMTU...";timeout 45 tracepath -4 -n -p "$UDP_DIAG_PORT" "$PEER_IP" >"$f" 2>&1||true;TRACEPATH_PMTU=$(grep -Eo 'pmtu[[:space:]]+[0-9]+' "$f"|tail -1|awk '{print $2}'||true);detail TRACEPATH "$f"
+  [[ $TEST_MODE == full ]]||return 0;local f="$TMP_DIR/tracepath.txt";info "tracepath and PMTU...";timeout 45 tracepath -4 -n -p "$UDP_DIAG_PORT" "$PEER_IP" >"$f" 2>&1||true;TRACEPATH_PMTU=$(grep -Eo 'pmtu[[:space:]]+[0-9]+' "$f"|tail -1|awk '{print $2}'||true);detail TRACEPATH "$f"
   if ping -4 -n -M do -s 56 -c 1 -W 1 "$PEER_IP" >/dev/null 2>&1;then local mtu=1500 d lo=0 hi mid;[[ -n $LOCAL_IFACE ]]&&d=$(ip -o link show "$LOCAL_IFACE"|awk '{for(i=1;i<=NF;i++)if($i=="mtu"){print $(i+1);exit}}');[[ ${d:-} =~ ^[0-9]+$ ]]&&mtu=$d;((mtu>9000))&&mtu=9000;hi=$((mtu-28));while ((lo<hi));do mid=$(((lo+hi+1)/2));if ping -4 -n -M do -s "$mid" -c 1 -W 1 "$PEER_IP" >/dev/null 2>&1;then lo=$mid;else hi=$((mid-1));fi;done;PMTU_VALUE=$((lo+28));local st=GOOD;((PMTU_VALUE<1300))&&st=BAD;((PMTU_VALUE>=1300&&PMTU_VALUE<1400))&&st=WARN;row "Path MTU (ICMP DF)" "$PMTU_VALUE bytes" N/A "$st";((PMTU_VALUE<1400))&&rec "Path MTU is low; account for tunnel overhead to avoid fragmentation or stalled large transfers.";else row "Path MTU (ICMP DF)" N/A N/A N/A;fi
   [[ -n $TRACEPATH_PMTU ]]&&row "Path MTU (tracepath)" "$TRACEPATH_PMTU bytes" N/A "$([[ $TRACEPATH_PMTU -ge 1400 ]]&&printf GOOD||printf WARN)"
   local type cmd out loss;for type in ICMP TCP UDP;do out="$TMP_DIR/mtr-$type.txt";case $type in ICMP)cmd="mtr -4 -n -r -w -c 20 $PEER_IP";;TCP)cmd="mtr -4 -n -r -w -c 20 -T -P $TCP_DIAG_PORT $PEER_IP";;UDP)cmd="mtr -4 -n -r -w -c 20 -u -P $UDP_DIAG_PORT $PEER_IP";;esac;info "MTR $type path...";timeout 50 bash -c "$cmd" >"$out" 2>&1||true;detail "MTR $type" "$out";loss=$(mtr_dest_loss "$out");case $type in ICMP)MTR_ICMP_LOSS=$loss;;TCP)MTR_TCP_LOSS=$loss;;UDP)MTR_UDP_LOSS=$loss;;esac;row "MTR $type destination loss" "${loss:+$loss%}" N/A "$(status_loss "$loss")";done
   if [[ -n $MTR_ICMP_LOSS ]]&&fcompare "$MTR_ICMP_LOSS" '<=' .2;then rec "Intermediate MTR loss is not treated as end-to-end loss when the destination remains healthy; routers often rate-limit probe replies.";fi
+  return 0
 }
 
 score_loss(){ [[ -z ${1:-} ]]&&{ echo 0;return;};if fcompare "$1" '<=' .2;then echo 0;elif fcompare "$1" '<=' .5;then echo 4;elif fcompare "$1" '<=' 1;then echo 8;elif fcompare "$1" '<=' 2;then echo 15;else echo 25;fi; }
@@ -436,7 +445,35 @@ save_report(){
   root cp "$tmp" "$LAST_REPORT"
 }
 reset_state(){ NAMES=();FWD=();REV=();STATES=();RECS=();DETAILS=();PING_FWD_LOSS="";PING_FWD_AVG="";PING_FWD_MDEV="";LOAD_UP_DELTA="";LOAD_DOWN_DELTA="";TCP_SINGLE_FWD="";TCP_SINGLE_REV="";TCP_PAR_FWD="";TCP_PAR_REV="";TCP_RETRANS_FWD="";TCP_RETRANS_REV="";TCP_ERROR_FWD="";TCP_ERROR_REV="";UDP_MAX_FWD_LOSS="";UDP_MAX_REV_LOSS="";UDP_MAX_FWD_JITTER="";UDP_MAX_REV_JITTER="";UDP_ERROR_FWD="";UDP_ERROR_REV="";PMTU_VALUE="";TRACEPATH_PMTU="";MTR_ICMP_LOSS="";MTR_TCP_LOSS="";MTR_UDP_LOSS="";IFACE_RX_ERR_DELTA=0;IFACE_RX_DROP_DELTA=0;IFACE_TX_ERR_DELTA=0;IFACE_TX_DROP_DELTA=0;IFACE_DROP_RATE="";IFACE_PACKET_DELTA=0;IFACE_SAMPLE_ADEQUATE=0;IPERF_REACHABLE=0;IPERF_CONNECTED=0;IPERF_REUSABLE=0;TCP_PATH_CLASS="";TCP_DIAG_BYTES="";TCP_DIAG_PEER=0;UDP_DIAG_STATE="";UDP_DIAG_RECEIVED="";UDP_DIAG_PEER=0; }
-run_test(){ TEST_MODE=$1;ensure_deps||{ pause;return 1;};reset_state;TMP_DIR=$(mktemp -d);prepare||{ pause;return 1;};section "RUNNING $(printf '%s' "$TEST_MODE"|tr '[:lower:]' '[:upper:]') TEST — $(forward_label)";local before after;before=$(iface_stats);[[ $TEST_MODE == quick ]]&&ping_test 15||ping_test 50;[[ $TEST_MODE == quick ]]&&tcp_tests 5||tcp_tests 10;loaded_latency;udp_tests;after=$(iface_stats);iface_delta "$before" "$after";path_tests;local sc score verdict confidence;sc=$(compute_score);IFS='|' read -r score verdict confidence<<<"$sc";[[ $verdict == INCOMPLETE ]]&&rec "Essential data tests are incomplete; do not use this run alone to accept or reject the server pair.";print_report "$score" "$verdict" "$confidence";save_report "$score" "$verdict" "$confidence";printf '\nLast summary: %s\n' "$LAST_REPORT";pause; }
+run_test(){
+  TEST_MODE=$1
+  ensure_deps||{ pause;return 1;}
+  reset_state
+  TMP_DIR=$(mktemp -d)
+  prepare||{ pause;return 1;}
+  section "RUNNING $(printf '%s' "$TEST_MODE"|tr '[:lower:]' '[:upper:]') TEST — $(forward_label)"
+  local before after
+  before=$(iface_stats)
+  if [[ $TEST_MODE == quick ]];then
+    ping_test 15
+    tcp_tests 5
+  else
+    ping_test 50
+    tcp_tests 10
+  fi
+  loaded_latency
+  udp_tests
+  after=$(iface_stats)
+  iface_delta "$before" "$after"
+  path_tests
+  local sc score verdict confidence
+  sc=$(compute_score);IFS='|' read -r score verdict confidence<<<"$sc"
+  [[ $verdict == INCOMPLETE ]]&&rec "Essential data tests are incomplete; do not use this run alone to accept or reject the server pair."
+  print_report "$score" "$verdict" "$confidence"
+  save_report "$score" "$verdict" "$confidence"
+  printf '\nLast summary: %s\n' "$LAST_REPORT"
+  pause
+}
 
 pid_value(){ local f=$1 p="";[[ -r $f ]]&&p=$(cat "$f" 2>/dev/null||true);[[ $p =~ ^[0-9]+$ ]]&&printf '%s' "$p"; }
 child_pid_matching(){

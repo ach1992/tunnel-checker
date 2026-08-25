@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.2.0"
+VERSION="0.2.1"
 REPO="ach1992/tunnel-checker"
 INSTALL_DIR="/usr/local/lib/tunnel-checker"
 INSTALL_PATH="$INSTALL_DIR/tunnel-checker.sh"
@@ -13,6 +13,7 @@ PID_FILE="$STATE_DIR/iperf3.pid"
 PORT_FILE="$STATE_DIR/iperf3.port"
 SERVER_LOG="$LOG_DIR/iperf3.log"
 LAST_REPORT="$LOG_DIR/last-report.txt"
+API_URL="https://api.github.com/repos/$REPO/contents/tunnel-checker.sh?ref=main"
 RAW_URL="https://raw.githubusercontent.com/$REPO/main/tunnel-checker.sh"
 CDN_URL="https://cdn.jsdelivr.net/gh/$REPO@main/tunnel-checker.sh"
 DEFAULT_PORT=5201
@@ -84,10 +85,10 @@ choose_role(){
 ensure_role(){ load_role; [[ -n $ROLE ]] || choose_role; }
 banner(){
   printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  printf '%b| Tunnel Checker v%-70s |%b\n' "$BL$B" "$VERSION" "$R"
+  printf '%b| Tunnel Check v%-70s |%b\n' "$BL$B" "$VERSION" "$R"
   printf '%b| Two-sided tunnel-link diagnostics %-49s |%b\n' "$BL$B" '' "$R"
-  printf '%b+----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
-  if [[ -n $ROLE ]]; then printf ' Endpoint: %b%s%b    Peer: %b%s%b    Test direction: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R" "$B" "$(forward_label)" "$R"; fi
+  printf '%b+-----------------------------------------------------------------------------------------+%b\n' "$BL$B" "$R"
+  if [[ -n $ROLE ]]; then printf ' Endpoint: %b%se%b    Peer: %b%s%b    Test direction: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R" "$B" "$(forward_label)" "$R"; fi
 }
 
 missing_packages(){
@@ -290,7 +291,34 @@ start_server(){ ensure_deps||{ pause;return 1;};ensure_role||return 1;server_run
 stop_server(){ if server_running;then local p;p=$(cat "$PID_FILE");root pkill -TERM -P "$p" 2>/dev/null||true;root kill -TERM "$p" 2>/dev/null||true;fi;root rm -f "$PID_FILE" "$PORT_FILE";ok "Test server stopped.";pause; }
 show_last_report(){ if [[ -r $LAST_REPORT ]];then cat "$LAST_REPORT";elif is_root;then [[ -r $LAST_REPORT ]]&&cat "$LAST_REPORT"||warn "No saved report yet.";elif command -v sudo >/dev/null;then sudo cat "$LAST_REPORT" 2>/dev/null||warn "No saved report yet.";else warn "No saved report yet.";fi;pause; }
 
-update_self(){ ensure_deps||{ pause;return 1;};TMP_DIR=$(mktemp -d);local f="$TMP_DIR/main" u good=0;for u in "$RAW_URL" "$CDN_URL";do info "Trying $u";if curl -fsSL --connect-timeout 10 --max-time 30 "$u" -o "$f"&&[[ -s $f ]]&&bash -n "$f";then good=1;break;fi;done;((good))||{ err "Could not download a valid update.";pause;return 1;};root mkdir -p "$INSTALL_DIR";root install -m 0755 "$f" "$INSTALL_PATH";root ln -sfn "$INSTALL_PATH" "$BIN_PATH";ok "Tunnel Checker updated.";pause; }
+download_main_script(){
+  local dest=$1 source
+  for source in api raw cdn; do
+    : >"$dest"
+    case $source in
+      api)
+        info "Trying GitHub API: $API_URL"
+        curl -fsSL --connect-timeout 8 --max-time 30 \
+          -H 'Accept: application/vnd.github.raw+json' \
+          -H 'X-GitHub-Api-Version: 2022-11-28' \
+          -H 'User-Agent: tunnel-checker' \
+          "$API_URL" -o "$dest" || { warn "GitHub API download failed."; continue; }
+        ;;
+      raw)
+        info "Trying GitHub Raw: $RAW_URL"
+        curl -fsSL --connect-timeout 8 --max-time 30 "$RAW_URL" -o "$dest" || { warn "GitHub Raw download failed."; continue; }
+        ;;
+      cdn)
+        info "Trying jsDelivr: $CDN_URL"
+        curl -fsSL --connect-timeout 8 --max-time 30 "$CDN_URL" -o "$dest" || { warn "jsDelivr download failed."; continue; }
+        ;;
+    esac
+    if [[ -s $dest ]] && bash -n "$dest"; then return 0; fi
+    warn "Downloaded content from $source was empty or invalid."
+  done
+  return 1
+}
+update_self(){ ensure_deps||{ pause;return 1;};TMP_DIR=$(mktemp -d);local f="$TMP_DIR/main";download_main_script "$f"||{ err "Could not download a valid update from GitHub API, GitHub Raw, or jsDelivr.";pause;return 1;};root mkdir -p "$INSTALL_DIR";root install -m 0755 "$f" "$INSTALL_PATH";root ln -sfn "$INSTALL_PATH" "$BIN_PATH";ok "Tunnel Checker updated to $(bash "$f" --version 2>/dev/null||printf unknown).";pause; }
 uninstall_self(){ local a=n;warn "This removes Tunnel Checker files/reports but leaves shared OS packages installed.";[[ -r /dev/tty ]]&&read -r -p "Uninstall Tunnel Checker? [y/N]: " a </dev/tty||true;[[ $a =~ ^[Yy]$ ]]||return;server_running&&{ local p;p=$(cat "$PID_FILE");root pkill -TERM -P "$p" 2>/dev/null||true;root kill -TERM "$p" 2>/dev/null||true;};root rm -f "$BIN_PATH";root rm -rf "$INSTALL_DIR" "$STATE_DIR" "$LOG_DIR";printf 'Tunnel Checker uninstalled. Shared packages were not removed.\n';exit 0; }
 
 menu(){

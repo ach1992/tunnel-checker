@@ -13,6 +13,14 @@ It measures packet loss, RTT/jitter, real TCP/UDP transfer, directional asymmetr
 
 ## One-line install
 
+For restricted networks where `raw.githubusercontent.com` or jsDelivr may time out, use the official GitHub REST API bootstrap:
+
+```bash
+curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | sudo bash
+```
+
+The installer and self-update flow try `api.github.com` first, then GitHub Raw, then jsDelivr. Downloads are syntax-validated before installation.
+
 Recommended where GitHub Raw may be blocked:
 
 ```bash

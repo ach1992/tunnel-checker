@@ -78,7 +78,7 @@ TUNNEL READINESS - IRAN->FOREIGN
 ------------------------------------------------------------------------------------------
  Ping             0% loss | 85.2 ms | var 0.5 ms               GOOD
  TCP data         48.0 Mbps effective | complete                GOOD
- UDP data         20/20 | loss 0.00% | var 1.2 ms              GOOD
+ UDP data         20/20 | 0.00% loss | bulk 240/240 KB         GOOD
  Path MTU         1500 bytes                                    GOOD
  Local interface  0.0000% drops | 0 errors                     GOOD
 

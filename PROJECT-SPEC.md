@@ -2,149 +2,159 @@
 
 ## Purpose
 
-Tunnel Checker is a small Bash-based network diagnostic tool for evaluating whether the network path between two Linux servers is suitable and stable enough for tunneling workloads.
+Tunnel Checker is a small Bash-based diagnostic tool for deciding whether the network path between two Linux servers is suitable and stable enough for tunneling workloads.
 
-The primary use case is testing an Iran server against an overseas server when basic ping works but real tunnels are unstable, slow, asymmetric, or intermittently fail.
+The primary use case is an Iran server paired with an overseas server where ordinary ping may look healthy while real tunnels are slow, asymmetric, lossy, unstable, or intermittently fail.
 
-This file is the canonical source for project-level intent and durable requirements. Live work belongs in GitHub Issues/PRs; implementation details belong in code and README documentation.
+This file is the canonical source for durable project intent. Live work belongs in GitHub Issues/PRs; implementation details belong in code and README documentation.
 
 ## Product outcome
 
-A user can install Tunnel Checker with one command on a supported server, open a simple management menu, prepare either endpoint for testing, run practical link-quality tests between the two servers, and receive a readable final assessment with actionable recommendations.
+A user can install Tunnel Checker with one command on both endpoints, identify each endpoint as Iran or Foreign, prepare either endpoint as a temporary test target, run practical diagnostics from both sides, and receive concise evidence-based guidance about tunnel suitability.
 
 ## Supported environment
 
-Initial release target:
+- Debian and Ubuntu Linux.
+- Bash.
+- IPv4 is required for the complete current test set.
+- Root/sudo is required for installation/package management; diagnostics should otherwise use only privileges required by their underlying tools.
 
-- Linux servers using Debian or Ubuntu.
-- Bash shell.
-- IPv4 is required for the complete initial test set.
-- IPv6 may be reported/detected where available, but complete IPv6 parity is not required for the first release.
-- Root/sudo is required for installation and package management; ordinary diagnostics should use the minimum privileges needed by the underlying tools.
+## Core workflow
 
-## Core requirements
+The normal workflow is deliberately SSH-free.
 
-### Installation and lifecycle
+1. Install Tunnel Checker on both endpoints.
+2. On first interactive launch, identify the local endpoint as `Iran` or `Foreign`; persist that choice and allow changing it later.
+3. Prepare endpoint B as a temporary `iperf3` test target.
+4. Run Full Test from endpoint A toward B.
+5. Stop/swap the target role.
+6. Prepare endpoint A as the test target.
+7. Run Full Test from endpoint B toward A.
+
+`iperf3 -R` may measure reverse-direction data during one run, but exact path diagnostics such as MTR/route/PMTU are local-perspective measurements. A second Full Test from the peer is therefore the authoritative way to measure the opposite path. SSH is not required by the normal product workflow.
+
+## Installation and lifecycle
 
 - Provide a one-line installer.
 - Install into a predictable system location and expose a `tunnel-checker` command.
 - Detect and install only required OS packages when missing.
-- Support an update path from the management menu.
+- Support update from the management menu.
 - Provide an uninstaller.
-- Uninstall only files owned by Tunnel Checker; do not remove shared packages installed by the OS/package manager.
-- Support a GitHub-hosted source plus a practical CDN fallback so installation is still possible when `raw.githubusercontent.com` is inaccessible.
+- Uninstall only files owned by Tunnel Checker; do not remove shared packages.
+- Support GitHub-hosted source plus a practical CDN fallback for networks where `raw.githubusercontent.com` is inaccessible.
 
-### Management menu
+## Management menu
 
-Provide a simple terminal menu for:
+The role-aware terminal menu should provide:
 
-1. Full tunnel-link test.
+1. Full test from the current endpoint toward its peer.
 2. Quick test.
-3. Start temporary iperf3 test server.
-4. Stop test server.
-5. Show test-server status.
-6. Update Tunnel Checker.
-7. Uninstall Tunnel Checker.
-8. Exit.
+3. Prepare the current endpoint as a temporary `iperf3` test target.
+4. Stop the test target.
+5. Show test-target status.
+6. Change endpoint role.
+7. Show the last summary.
+8. Update Tunnel Checker.
+9. Uninstall Tunnel Checker.
+10. Exit.
 
-The script should ask interactively for values it genuinely needs and provide safe defaults wherever possible.
+The header should always make the current endpoint and test direction obvious.
 
-### Network diagnostics
+## Network diagnostics
 
-The full test should cover the practical paths and failure modes that can make a tunnel fail even when ordinary ping looks healthy.
+The Full Test should cover practical failure modes that can make a tunnel fail even when ordinary ping looks healthy, when supported by the environment and peer:
 
-Required diagnostics, when the local environment and peer permit them:
+- Peer resolution/reachability and local route/source/interface.
+- ICMP packet loss, average RTT, and RTT variation.
+- TCP reachability of the `iperf3` control port.
+- TCP single-stream throughput in both data directions.
+- TCP parallel-stream throughput in both data directions.
+- TCP retransmission information exposed by `iperf3`.
+- UDP throughput/loss/jitter in both data directions at bounded rates derived from the expected workload.
+- RTT increase under verified upload/download load.
+- ICMP/TCP/UDP MTR path analysis with destination loss summarized separately from raw intermediate-hop behavior.
+- `tracepath` path-MTU information where available.
+- IPv4 DF/PMTU discovery with bounded probes.
+- Local interface packet/error/drop counters around the active test window.
+- Detection of meaningful directional performance asymmetry.
+- Clear distinction between a blocked/unavailable diagnostic, a tool/protocol failure, and a measured bad network result.
 
-- Peer reachability and address resolution.
-- Local route/interface/source-address information toward the peer.
-- ICMP latency and packet loss over a meaningful sample.
-- RTT minimum/average/maximum and jitter/variation.
-- TCP reachability to the iperf3 test port.
-- TCP single-stream throughput, local -> peer.
-- TCP single-stream throughput, peer -> local using iperf3 reverse mode.
-- TCP parallel-stream throughput in both directions.
-- TCP retransmission information when exposed by iperf3.
-- UDP throughput/loss/jitter in both directions at bounded user-selected or automatically chosen rates.
-- ICMP MTR path analysis.
-- TCP MTR path analysis where supported.
-- UDP MTR path analysis where supported.
-- `tracepath`/equivalent path-MTU information where available.
-- Path MTU discovery using non-fragmenting ICMP probes with bounded search where supported.
-- Local interface packet/error/drop counters before and after the active transfer tests when discoverable.
-- Detection of asymmetric performance between directions.
-- Clear distinction between an unavailable/blocked diagnostic and an actual failed link test.
+Intermediate MTR probe loss must not be treated as end-to-end packet loss when the destination and later hops remain healthy.
 
-### Optional true reverse-path diagnostics
-
-iperf3 reverse mode measures data flow in the opposite direction but does not reveal the Internet route from the remote server back to the local server.
-
-The tool may optionally use an existing SSH connection to the peer to run reverse-side ping/MTR/route diagnostics. It must not collect, store, or embed passwords, private keys, or other credentials. If SSH is unavailable, the report must state that true reverse-path route diagnostics were not measured rather than pretending that they were.
-
-### Test safety
+## Test safety
 
 - Active tests must be bounded in duration and bandwidth.
-- The user should be able to choose or accept a sensible maximum expected tunnel bandwidth.
-- A temporary iperf3 server must not be silently left running forever.
-- Starting the test server must clearly state that the selected TCP/UDP port must be reachable from the peer and that an exposed iperf3 service can consume bandwidth.
-- Tunnel Checker must not silently modify firewall rules, routing, sysctl, tunnel configuration, or production network configuration.
-- Commands that are unavailable on a distribution/version should degrade gracefully and be reported as skipped/unsupported.
+- The user chooses or accepts an expected tunnel bandwidth used to bound active tests.
+- A temporary `iperf3` server must automatically stop after a bounded lifetime.
+- Starting the server must state that TCP/UDP on the selected port must be reachable from the peer and that `iperf3` has no authentication.
+- Tunnel Checker must not silently change firewall rules, routing, sysctl, tunnel configuration, or provider settings.
+- Unsupported tools/flags must degrade gracefully.
 
-## Results and scoring
+## Results, evidence, and scoring
 
-At the end of a full test, print a readable terminal report containing at minimum:
+The concise result section should show:
 
-- Metric/test name.
-- Forward result.
-- Reverse result where applicable.
-- Health state (`GOOD`, `WARN`, `BAD`, or `N/A`).
-- A combined tunnel-suitability score from 0–100.
-- Overall verdict such as `EXCELLENT`, `GOOD`, `MARGINAL`, or `POOR`.
-- Concise recommendations derived from actual observations.
+- metric/test name;
+- current endpoint -> peer result;
+- peer -> current endpoint data result where actually measured;
+- health state such as `GOOD`, `WARN`, `BAD`, `FAILED`, or `N/A`;
+- evidence confidence;
+- a numeric 0–100 score only when essential evidence exists;
+- overall verdict;
+- concise recommendations derived from observed evidence.
 
-The score is advisory, not a guarantee. Packet loss, jitter, sustained throughput, bidirectional asymmetry, MTU problems, and path instability should influence the verdict more strongly than raw ping alone.
+A reachable TCP control port is not proof that an `iperf3` data test succeeded. When an active data test fails, surface a useful bounded error reason rather than silently turning it into `N/A`.
 
-Thresholds must be centralized in the script so future tuning does not require rewriting reporting logic.
+Loaded-latency results are valid only when the tool verifies that a real `iperf3` load was created. If essential TCP/UDP evidence is missing, the run must be `INCOMPLETE`, confidence must be low, and no authoritative numeric score should be shown.
+
+The score is advisory and should weight packet loss, jitter, usable throughput, directional asymmetry, load-induced latency, MTU, and meaningful local drops more strongly than idle ping alone.
+
+## Use-case assessment
+
+At the end of a Full Test, include a compact evidence-based table indicating `SUITABLE`, `CAUTION`, `UNSUITABLE`, or `UNKNOWN` for at least:
+
+- TCP tunnels/proxies;
+- UDP tunnels such as WireGuard-style workloads;
+- interactive/realtime traffic;
+- bulk/high-bandwidth transfer;
+- MTU-sensitive tunnels;
+- overall endpoint pair.
+
+Missing required evidence must produce `UNKNOWN`, not a guessed suitability result.
 
 ## Quick test
 
-Quick test should be deliberately lightweight and include only high-signal checks such as:
-
-- route/reachability;
-- short ping sample;
-- TCP port reachability;
-- short TCP throughput in both directions when iperf3 is available;
-- concise verdict.
-
-It should not run the full multi-rate UDP/path suite.
+Quick Test should remain deliberately lightweight and include high-signal checks such as route/reachability, a short ping sample, TCP control reachability, short TCP throughput in both data directions when available, and a concise verdict. It does not need the full UDP/path suite.
 
 ## User experience
 
-- English source/UI for the initial release.
-- Color output when attached to a compatible terminal, with a readable no-color fallback.
+- English source/UI for the current release.
+- Consistent ANSI color and section styling when attached to a compatible terminal, with a readable no-color fallback.
 - Clear progress while tests run.
-- Avoid dumping raw command output unless it is useful; summarize primary metrics and show detailed route diagnostics in a separate section.
-- Store no sensitive credentials.
-- Temporary report files must be bounded and safe.
+- Keep raw MTR/trace details below the concise summary rather than forcing users to interpret them first.
+- Do not store credentials or require SSH.
+- Keep temporary files bounded and safe.
 
-## Non-goals for the initial release
+## Non-goals
 
 - Creating or managing tunnels.
-- Changing firewall configuration automatically.
+- Automatically changing firewall rules.
 - Continuous monitoring/daemon mode.
-- Web UI.
-- Central server, telemetry, accounts, or cloud service.
-- Benchmarking the public Internet in general; the focus is the path between the two user-controlled endpoints.
-- Perfect diagnosis of carrier filtering or traffic shaping when it cannot be proven by available measurements.
+- Web UI, central service, accounts, or telemetry.
+- Perfect diagnosis of carrier filtering/traffic shaping when available measurements cannot prove it.
+- Automatically combining two independent endpoint reports in the current release.
 
 ## Completion criteria
 
-The initial project outcome is complete when:
+The current product outcome is complete when:
 
-1. A fresh supported Debian/Ubuntu server can install the tool using a documented one-line command.
-2. `tunnel-checker` opens the management menu.
-3. The peer can run a bounded temporary iperf3 server from the same tool.
-4. Quick and Full tests execute without destructive network changes.
-5. Full test measures the required available bidirectional data/path signals and explicitly marks unavailable diagnostics.
-6. The final report provides a score, verdict, directional metrics, and evidence-based recommendations.
-7. Update and uninstall flows work without removing unrelated/shared system files.
-8. README documents installation, two-server usage, firewall/iperf exposure, interpretation, and uninstall.
+1. Fresh supported hosts can install the tool using the documented one-line installer.
+2. First interactive launch identifies and persists Iran/Foreign endpoint role.
+3. The menu clearly reflects current role and test direction.
+4. Either endpoint can run a bounded temporary `iperf3` target.
+5. Quick/Full tests run without destructive network changes.
+6. Full Test measures all required available signals and clearly distinguishes failed/unavailable evidence.
+7. Missing essential data yields `INCOMPLETE` rather than a misleading numeric score.
+8. The result includes concise metric, suitability, confidence, recommendation, and use-case tables plus optional raw route details.
+9. The documented standard workflow measures both endpoint perspectives without SSH.
+10. Update/uninstall flows preserve unrelated/shared system state.

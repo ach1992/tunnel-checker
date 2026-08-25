@@ -39,7 +39,7 @@ ROLE=""; PEER_ROLE=""; PEER_HOST=""; PEER_IP=""; LOCAL_IFACE=""; LOCAL_SRC=""
 TEST_PORT=$DEFAULT_PORT; UDP_PORT=$((DEFAULT_PORT+1)); EXPECTED_MBPS=$DEFAULT_MBPS; TEST_MODE=readiness; TMP_DIR=""
 PING_LOSS=""; PING_RTT=""; PING_VAR=""
 TCP_STATE=""; TCP_BYTES_SENT=0; TCP_BYTES_RECV=0; TCP_MBPS=""; TCP_STALLED=0
-UDP_SENT=0; UDP_RECV=0; UDP_PROBE_LOSS=""; UDP_LOSS=""; UDP_RTT_AVG=""; UDP_RTT_VAR=""; UDP_PACKET_BYTES=1200; UDP_BULK_SENT=0; UDP_BULK_RECV=0; UDP_BULK_LOSS=""
+UDP_SENT=0; UDP_RECV=0; UDP_PROBE_LOSS=""; UDP_LOSS=""; UDP_PACKET_BYTES=1200; UDP_BULK_SENT=0; UDP_BULK_RECV=0; UDP_BULK_LOSS=""
 PMTU_VALUE=""
 IFACE_PACKETS=0; IFACE_ERRORS=0; IFACE_DROPS=0; IFACE_DROP_RATE=""
 FINAL_SCORE=0; FINAL_VERDICT=""; FINAL_CONFIDENCE=""; FINAL_RECOMMENDATION=""; FINAL_REASON=""
@@ -179,19 +179,17 @@ tcp_data_test(){
 }
 
 udp_data_test(){
-  local count=$1 i token payload out er good=0 start end elapsed samples="" stats pid step batch bulkout bulkerr
+  local count=$1 i token payload out er good=0 pid step batch bulkout bulkerr
   info "Checking UDP data path..."
   UDP_SENT=$count
   for ((i=1;i<=count;i++)); do
     token="TU04-${i}-${RANDOM}-${RANDOM}-"
     payload="$TMP_DIR/udp-$i.payload"; out="$TMP_DIR/udp-$i.out"; er="$TMP_DIR/udp-$i.err"
     { printf '%s' "$token"; dd if=/dev/zero bs=1200 count=1 status=none; } | head -c "$UDP_PACKET_BYTES" >"$payload"
-    start=$(date +%s%3N)
     timeout 1 socat -T1 - "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" <"$payload" >"$out" 2>"$er" & pid=$!
     for ((step=0;step<100;step++)); do
       if cmp -s "$payload" "$out" 2>/dev/null; then
-        end=$(date +%s%3N); elapsed=$((end-start)); ((elapsed<0)) && elapsed=0
-        good=$((good+1)); samples+="$elapsed"$'\n'
+        good=$((good+1))
         kill -TERM "$pid" 2>/dev/null || true
         break
       fi
@@ -203,20 +201,19 @@ udp_data_test(){
   UDP_RECV=$good
   UDP_PROBE_LOSS=$(awk -v s="$UDP_SENT" -v r="$UDP_RECV" 'BEGIN{if(s>0)printf "%.2f",100*(s-r)/s;else print "100.00"}')
   UDP_LOSS=$UDP_PROBE_LOSS
-  if ((good>0)); then
-    stats=$(printf '%s' "$samples" | awk 'NF{n++;s+=$1;q+=$1*$1}END{if(n){m=s/n;v=q/n-m*m;if(v<0)v=0;printf "%.1f|%.1f",m,sqrt(v)}}')
-    IFS='|' read -r UDP_RTT_AVG UDP_RTT_VAR <<<"$stats"
-  fi
 
+  # A small sustained sample complements the probes without turning the readiness
+  # check into a bandwidth benchmark. 200 datagrams gives 0.5% loss resolution
+  # while keeping target process churn and generated traffic bounded.
   if [[ $TEST_MODE == readiness && $good -gt 0 ]]; then
-    UDP_BULK_SENT=$((UDP_PACKET_BYTES*1000))
+    UDP_BULK_SENT=$((UDP_PACKET_BYTES*200))
     bulkout="$TMP_DIR/udp-bulk.out"; bulkerr="$TMP_DIR/udp-bulk.err"
     (
-      for ((batch=0;batch<50;batch++)); do
-        dd if=/dev/zero bs="$UDP_PACKET_BYTES" count=20 status=none
-        sleep 0.02
+      for ((batch=0;batch<20;batch++)); do
+        dd if=/dev/zero bs="$UDP_PACKET_BYTES" count=10 status=none
+        sleep 0.025
       done
-    ) | timeout 6 socat -b"$UDP_PACKET_BYTES" STDIO "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" >"$bulkout" 2>"$bulkerr" || true
+    ) | timeout 5 socat -b"$UDP_PACKET_BYTES" STDIO "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" >"$bulkout" 2>"$bulkerr" || true
     UDP_BULK_RECV=$(stat -c %s "$bulkout" 2>/dev/null || printf 0)
     ((UDP_BULK_RECV>UDP_BULK_SENT)) && UDP_BULK_RECV=$UDP_BULK_SENT
     UDP_BULK_LOSS=$(awk -v s="$UDP_BULK_SENT" -v r="$UDP_BULK_RECV" 'BEGIN{if(s>0)printf "%.2f",100*(s-r)/s;else print "100.00"}')
@@ -276,13 +273,7 @@ tcp_points(){
 }
 udp_points(){
   [[ -z $UDP_LOSS ]] && { printf 0; return; }
-  local p
-  if fcompare "$UDP_LOSS" '<=' 0; then p=25; elif fcompare "$UDP_LOSS" '<=' 5; then p=20; elif fcompare "$UDP_LOSS" '<=' 10; then p=14; elif fcompare "$UDP_LOSS" '<=' 25; then p=7; elif fcompare "$UDP_LOSS" '<' 100; then p=2; else p=0; fi
-  if [[ -n $UDP_RTT_VAR ]]; then
-    if fcompare "$UDP_RTT_VAR" '>' 50; then p=$((p-8)); elif fcompare "$UDP_RTT_VAR" '>' 30; then p=$((p-5)); elif fcompare "$UDP_RTT_VAR" '>' 15; then p=$((p-2)); fi
-  fi
-  ((p<0)) && p=0
-  printf '%s' "$p"
+  if fcompare "$UDP_LOSS" '<=' 0; then printf 25; elif fcompare "$UDP_LOSS" '<=' 5; then printf 20; elif fcompare "$UDP_LOSS" '<=' 10; then printf 14; elif fcompare "$UDP_LOSS" '<=' 25; then printf 7; elif fcompare "$UDP_LOSS" '<' 100; then printf 2; else printf 0; fi
 }
 mtu_points(){
   [[ -z $PMTU_VALUE ]] && { [[ $TEST_MODE == quick ]] && printf 7 || printf 0; return; }
@@ -296,7 +287,7 @@ iface_points(){
 
 signal_state_ping(){ [[ -z $PING_LOSS ]] && { printf UNKNOWN; return; }; if fcompare "$PING_LOSS" '>' 2 || { [[ -n $PING_VAR ]] && fcompare "$PING_VAR" '>' 20; }; then printf BAD; elif fcompare "$PING_LOSS" '>' .2 || { [[ -n $PING_VAR ]] && fcompare "$PING_VAR" '>' 10; }; then printf WARN; else printf GOOD; fi; }
 signal_state_tcp(){ case $TCP_STATE in HEALTHY) if [[ -n $TCP_MBPS ]] && fcompare "$TCP_MBPS" '<' "$(awk -v e="$EXPECTED_MBPS" 'BEGIN{print e*.5}')"; then printf WARN; else printf GOOD; fi;; DEGRADED) printf WARN;; STALL|BLOCKED) printf BAD;; *) printf UNKNOWN;; esac; }
-signal_state_udp(){ [[ -z $UDP_LOSS ]] && { printf UNKNOWN; return; }; if fcompare "$UDP_LOSS" '>' 10 || { [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 50; }; then printf BAD; elif fcompare "$UDP_LOSS" '>' 2 || { [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 20; }; then printf WARN; else printf GOOD; fi; }
+signal_state_udp(){ [[ -z $UDP_LOSS ]] && { printf UNKNOWN; return; }; if fcompare "$UDP_LOSS" '>' 10; then printf BAD; elif fcompare "$UDP_LOSS" '>' 2; then printf WARN; else printf GOOD; fi; }
 signal_state_mtu(){ [[ -z $PMTU_VALUE ]] && { printf UNKNOWN; return; }; if ((PMTU_VALUE<1300)); then printf BAD; elif ((PMTU_VALUE<1400)); then printf WARN; else printf GOOD; fi; }
 signal_state_iface(){ ((IFACE_ERRORS>0)) && { printf BAD; return; }; [[ -z $IFACE_DROP_RATE ]] && { printf GOOD; return; }; if fcompare "$IFACE_DROP_RATE" '>' .5; then printf BAD; elif fcompare "$IFACE_DROP_RATE" '>' .1; then printf WARN; else printf GOOD; fi; }
 
@@ -313,9 +304,7 @@ compute_score(){
   if [[ $TCP_STATE == DEGRADED ]]; then ((s>64)) && s=64; fi
   if [[ $TCP_STATE == STALL ]]; then ((s>49)) && s=49; fi
   if [[ $TCP_STATE == BLOCKED ]]; then ((s>39)) && s=39; fi
-  [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>=' 100 && ((s>69)) && s=69
-  [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 50 && ((s>69)) && s=69
-  [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 30 && ((s>79)) && s=79
+  [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10 && ((s>69)) && s=69
   [[ -n $PING_LOSS ]] && fcompare "$PING_LOSS" '>' 5 && ((s>49)) && s=49
   if [[ $TCP_STATE == STALL || $TCP_STATE == BLOCKED ]]; then [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 50 && ((s>29)) && s=29; fi
   ((s<0)) && s=0; ((s>100)) && s=100
@@ -326,7 +315,6 @@ compute_score(){
 
   if [[ $TCP_STATE == STALL || $TCP_STATE == BLOCKED ]]; then FINAL_RECOMMENDATION="TRY ANOTHER SERVER"
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_RECOMMENDATION="CAUTION"
-  elif [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 30; then FINAL_RECOMMENDATION="CAUTION"
   elif ((s>=70)); then FINAL_RECOMMENDATION="USE"
   elif ((s>=50)); then FINAL_RECOMMENDATION="CAUTION"
   else FINAL_RECOMMENDATION="TRY ANOTHER SERVER"; fi
@@ -335,7 +323,6 @@ compute_score(){
   elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_REASON="TCP data could not pass to the test target."
   elif [[ -n $PING_LOSS ]] && fcompare "$PING_LOSS" '>' 2; then FINAL_REASON="Packet loss is too high for a stable server pair."
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_REASON="UDP packet loss is high on this server pair."
-  elif [[ -n $UDP_RTT_VAR ]] && fcompare "$UDP_RTT_VAR" '>' 30; then FINAL_REASON="UDP latency variation is high on this server pair."
   elif [[ -n $IFACE_DROP_RATE ]] && fcompare "$IFACE_DROP_RATE" '>' .1; then FINAL_REASON="Local interface drops increased during the test."
   elif [[ $TCP_STATE == HEALTHY && -n $TCP_MBPS ]] && fcompare "$TCP_MBPS" '<' "$(awk -v e="$EXPECTED_MBPS" 'BEGIN{print e*.5}')"; then FINAL_REASON="TCP data passes, but effective transfer rate is well below the requested target."
   else FINAL_REASON="Core path checks completed without a major blocker."; fi
@@ -346,7 +333,7 @@ print_report(){
   local ping_result tcp_result udp_result mtu_result iface_result
   ping_result="${PING_LOSS:-N/A}% loss | $(fmt "$PING_RTT" 1) ms | var $(fmt "$PING_VAR" 1) ms"
   case $TCP_STATE in HEALTHY) tcp_result="$(fmt "$TCP_MBPS" 1) Mbps effective | $TCP_BYTES_RECV/$TCP_BYTES_SENT B";; STALL) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | stalled";; DEGRADED) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | partial";; *) tcp_result="no verified data";; esac
-  udp_result="$UDP_RECV/$UDP_SENT | loss ${UDP_LOSS:-N/A}% | var $(fmt "$UDP_RTT_VAR" 1) ms"
+  udp_result="$UDP_RECV/$UDP_SENT | ${UDP_LOSS:-N/A}% loss | bulk $((UDP_BULK_RECV/1000))/$((UDP_BULK_SENT/1000)) KB"
   mtu_result="${PMTU_VALUE:+$PMTU_VALUE bytes}"; [[ -z $mtu_result ]] && mtu_result="not sampled in quick mode"
   iface_result="${IFACE_DROP_RATE:-N/A}% drops | $IFACE_ERRORS errors | $IFACE_PACKETS packets"
 
@@ -374,7 +361,7 @@ save_report(){
     printf 'Direction: %s\nPair: %s -> %s\nPorts: TCP %s, UDP %s\nExpected: %s Mbps\nScore: %s/100\nVerdict: %s\nConfidence: %s\nRecommendation: %s\nReason: %s\n\n' "$(forward_label)" "${LOCAL_SRC:-$(local_ipv4)}" "$PEER_IP" "$TEST_PORT" "$UDP_PORT" "$EXPECTED_MBPS" "$FINAL_SCORE" "$FINAL_VERDICT" "$FINAL_CONFIDENCE" "$FINAL_RECOMMENDATION" "$FINAL_REASON"
     printf 'Ping: %s%% loss, %s ms RTT, %s ms variation\n' "${PING_LOSS:-N/A}" "${PING_RTT:-N/A}" "${PING_VAR:-N/A}"
     printf 'TCP: %s, %s/%s bytes, %s Mbps effective\n' "$TCP_STATE" "$TCP_BYTES_RECV" "$TCP_BYTES_SENT" "${TCP_MBPS:-N/A}"
-    printf 'UDP: %s/%s probes, %s%% probe loss, %s%% bulk loss, %s%% effective loss, %s ms avg RTT, %s ms variation, %s-byte packets\n' "$UDP_RECV" "$UDP_SENT" "${UDP_PROBE_LOSS:-N/A}" "${UDP_BULK_LOSS:-N/A}" "${UDP_LOSS:-N/A}" "${UDP_RTT_AVG:-N/A}" "${UDP_RTT_VAR:-N/A}" "$UDP_PACKET_BYTES"
+    printf 'UDP: %s/%s probes, %s%% probe loss, %s/%s bulk bytes, %s%% bulk loss, %s%% effective loss, %s-byte packets\n' "$UDP_RECV" "$UDP_SENT" "${UDP_PROBE_LOSS:-N/A}" "$UDP_BULK_RECV" "$UDP_BULK_SENT" "${UDP_BULK_LOSS:-N/A}" "${UDP_LOSS:-N/A}" "$UDP_PACKET_BYTES"
     printf 'PMTU: %s\n' "${PMTU_VALUE:-N/A}"
     printf 'Interface: %s packets, %s errors, %s drops, %s%% drop rate\n' "$IFACE_PACKETS" "$IFACE_ERRORS" "$IFACE_DROPS" "${IFACE_DROP_RATE:-N/A}"
     printf 'Scope: pair/direction and tested ports only; protocol-specific filtering may differ.\n'
@@ -382,7 +369,7 @@ save_report(){
   root mkdir -p "$LOG_DIR" >/dev/null 2>&1 || return 0
   root cp "$tmp" "$LAST_REPORT" 2>/dev/null || true
 }
-reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_RTT_AVG="";UDP_RTT_VAR="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";PMTU_VALUE="";IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
+reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";PMTU_VALUE="";IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
 run_test(){
   TEST_MODE=$1
   ensure_deps || { pause; return 1; }

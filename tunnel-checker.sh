@@ -425,6 +425,7 @@ check_target_ports(){
   socket_busy udp "$port"&&{ err "UDP port $port is already in use; choose another iperf3 base port.";return 1; }
   socket_busy tcp "$((port+1))"&&{ err "TCP diagnostic port $((port+1)) is already in use; choose another base port.";return 1; }
   socket_busy udp "$((port+2))"&&{ err "UDP diagnostic port $((port+2)) is already in use; choose another base port.";return 1; }
+  return 0
 }
 launch_timeout(){
   local sec=$1 pidfile=$2 logfile=$3;shift 3;local cmd q

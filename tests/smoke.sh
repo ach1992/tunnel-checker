@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash -n "$ROOT/tunnel-checker.sh"
 bash -n "$ROOT/install.sh"
-[[ "$($ROOT/tunnel-checker.sh --version)" == "0.2.0" ]]
+[[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.2.0" ]]
 ! grep -q 'openssh-client' "$ROOT/tunnel-checker.sh"
 
 export NO_COLOR=1

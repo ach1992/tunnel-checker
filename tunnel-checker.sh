@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.4.1"
 REPO="ach1992/tunnel-checker"
 REPO_URL="https://github.com/$REPO"
 INSTALL_DIR="/usr/local/lib/tunnel-checker"

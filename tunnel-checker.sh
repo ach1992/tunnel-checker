@@ -39,9 +39,9 @@ ROLE=""; PEER_ROLE=""; PEER_HOST=""; PEER_IP=""; LOCAL_IFACE=""; LOCAL_SRC=""
 TEST_PORT=$DEFAULT_PORT; UDP_PORT=$((DEFAULT_PORT+1)); EXPECTED_MBPS=$DEFAULT_MBPS; TEST_MODE=readiness; TMP_DIR=""
 PING_LOSS=""; PING_RTT=""; PING_VAR=""
 TCP_STATE=""; TCP_BYTES_SENT=0; TCP_BYTES_RECV=0; TCP_MBPS=""; TCP_STALLED=0
-UDP_SENT=0; UDP_RECV=0; UDP_PROBE_LOSS=""; UDP_LOSS=""; UDP_PACKET_BYTES=1200; UDP_BULK_SENT=0; UDP_BULK_RECV=0; UDP_BULK_LOSS=""
+UDP_SENT=0; UDP_RECV=0; UDP_PROBE_LOSS=""; UDP_LOSS=""; UDP_PACKET_BYTES=1200; UDP_BULK_SENT=0; UDP_BULK_RECV=0; UDP_BULK_LOSS=""; UDP_REFUSED=0
 PMTU_VALUE=""
-IFACE_PACKETS=0; IFACE_ERRORS=0; IFACE_DROPS=0; IFACE_DROP_RATE=""
+IFACE_AVAILABLE=0; IFACE_PACKETS=0; IFACE_ERRORS=0; IFACE_DROPS=0; IFACE_DROP_RATE=""
 FINAL_SCORE=0; FINAL_VERDICT=""; FINAL_CONFIDENCE=""; FINAL_RECOMMENDATION=""; FINAL_REASON=""
 
 cleanup(){ [[ -n $TMP_DIR && -d $TMP_DIR ]] && rm -rf "$TMP_DIR"; return 0; }
@@ -138,6 +138,7 @@ parse_ping(){
   if [[ -n $r ]]; then vals=$(sed -E 's/.*= *([^ ]+) ms.*/\1/' <<<"$r"); avg=$(cut -d/ -f2 <<<"$vals"); var=$(cut -d/ -f4 <<<"$vals"); fi
   printf '%s|%s|%s' "$loss" "$avg" "$var"
 }
+connection_refused(){ grep -Eqi 'Connection refused|ECONNREFUSED' "$1" 2>/dev/null; }
 ping_test(){
   local count=$1 f="$TMP_DIR/ping.txt" p
   info "Checking packet loss and latency..."
@@ -157,7 +158,7 @@ tcp_data_test(){
   TCP_BYTES_SENT=$(stat -c %s "$payload")
   info "Checking sustained TCP data..."
   start=$(date +%s%3N)
-  timeout 12 socat STDIO,ignoreeof "TCP4:$PEER_IP:$TEST_PORT,connect-timeout=4" <"$payload" >"$out" 2>"$er" & pid=$!
+  LC_ALL=C timeout 12 socat STDIO,ignoreeof "TCP4:$PEER_IP:$TEST_PORT,connect-timeout=4" <"$payload" >"$out" 2>"$er" & pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     sleep 0.2
     current=$(stat -c %s "$out" 2>/dev/null || printf 0)
@@ -169,7 +170,9 @@ tcp_data_test(){
   end=$(date +%s%3N); elapsed=$((end-start)); ((elapsed<1)) && elapsed=1
   TCP_BYTES_RECV=$(stat -c %s "$out" 2>/dev/null || printf 0); TCP_STALLED=$stalled
   if ((TCP_BYTES_RECV>=${#token})) && ! cmp -n "${#token}" "$payload" "$out" >/dev/null 2>&1; then TCP_BYTES_RECV=0; fi
-  if ((TCP_BYTES_RECV>=TCP_BYTES_SENT)); then
+  if ((TCP_BYTES_RECV==0)) && connection_refused "$er"; then
+    TCP_STATE=REFUSED
+  elif ((TCP_BYTES_RECV>=TCP_BYTES_SENT)); then
     TCP_STATE=HEALTHY
     TCP_MBPS=$(awk -v b="$TCP_BYTES_RECV" -v ms="$elapsed" 'BEGIN{printf "%.2f",b*8/(ms*1000)}')
   elif ((TCP_BYTES_RECV>0 && (rc==124 || stalled>=15))); then TCP_STATE=STALL
@@ -181,12 +184,13 @@ tcp_data_test(){
 udp_data_test(){
   local count=$1 i token payload out er good=0 pid step batch bulkout bulkerr
   info "Checking UDP data path..."
-  UDP_SENT=$count
+  UDP_SENT=0; UDP_REFUSED=0
   for ((i=1;i<=count;i++)); do
+    UDP_SENT=$((UDP_SENT+1))
     token="TU04-${i}-${RANDOM}-${RANDOM}-"
     payload="$TMP_DIR/udp-$i.payload"; out="$TMP_DIR/udp-$i.out"; er="$TMP_DIR/udp-$i.err"
     { printf '%s' "$token"; dd if=/dev/zero bs=1200 count=1 status=none; } | head -c "$UDP_PACKET_BYTES" >"$payload"
-    timeout 1 socat -T1 - "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" <"$payload" >"$out" 2>"$er" & pid=$!
+    LC_ALL=C timeout 1 socat -T1 - "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" <"$payload" >"$out" 2>"$er" & pid=$!
     for ((step=0;step<100;step++)); do
       if cmp -s "$payload" "$out" 2>/dev/null; then
         good=$((good+1))
@@ -197,6 +201,7 @@ udp_data_test(){
       sleep 0.01
     done
     wait "$pid" 2>/dev/null || true
+    if connection_refused "$er"; then UDP_REFUSED=1; break; fi
   done
   UDP_RECV=$good
   UDP_PROBE_LOSS=$(awk -v s="$UDP_SENT" -v r="$UDP_RECV" 'BEGIN{if(s>0)printf "%.2f",100*(s-r)/s;else print "100.00"}')
@@ -205,7 +210,7 @@ udp_data_test(){
   # A small sustained sample complements the probes without turning the readiness
   # check into a bandwidth benchmark. 200 datagrams gives 0.5% loss resolution
   # while keeping target process churn and generated traffic bounded.
-  if [[ $TEST_MODE == readiness && $good -gt 0 ]]; then
+  if [[ $TEST_MODE == readiness && $UDP_REFUSED -eq 0 && $good -gt 0 ]]; then
     UDP_BULK_SENT=$((UDP_PACKET_BYTES*200))
     bulkout="$TMP_DIR/udp-bulk.out"; bulkerr="$TMP_DIR/udp-bulk.err"
     (
@@ -236,18 +241,23 @@ pmtu_test(){
 
 iface_stats(){
   local d=$1 x p e dr
-  [[ -n $LOCAL_IFACE && -d /sys/class/net/$LOCAL_IFACE/statistics ]] || { printf '0|0|0'; return; }
+  [[ -n $LOCAL_IFACE && -d /sys/class/net/$LOCAL_IFACE/statistics ]] || { printf '0|0|0|0'; return; }
   d="/sys/class/net/$LOCAL_IFACE/statistics"
+  for x in rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped; do [[ -r $d/$x ]] || { printf '0|0|0|0'; return; }; done
   p=$(( $(cat "$d/rx_packets" 2>/dev/null || printf 0) + $(cat "$d/tx_packets" 2>/dev/null || printf 0) ))
   e=$(( $(cat "$d/rx_errors" 2>/dev/null || printf 0) + $(cat "$d/tx_errors" 2>/dev/null || printf 0) ))
   dr=$(( $(cat "$d/rx_dropped" 2>/dev/null || printf 0) + $(cat "$d/tx_dropped" 2>/dev/null || printf 0) ))
-  printf '%s|%s|%s' "$p" "$e" "$dr"
+  printf '%s|%s|%s|1' "$p" "$e" "$dr"
 }
 iface_delta(){
-  local before=$1 after=$2 bp be bd ap ae ad
-  IFS='|' read -r bp be bd <<<"$before"; IFS='|' read -r ap ae ad <<<"$after"
-  IFACE_PACKETS=$((ap-bp)); IFACE_ERRORS=$((ae-be)); IFACE_DROPS=$((ad-bd)); ((IFACE_PACKETS<0)) && IFACE_PACKETS=0
-  if ((IFACE_PACKETS>0)); then IFACE_DROP_RATE=$(awk -v d="$IFACE_DROPS" -v p="$IFACE_PACKETS" 'BEGIN{printf "%.4f",100*d/p}'); else IFACE_DROP_RATE=""; fi
+  local before=$1 after=$2 bp be bd bav ap ae ad aav
+  IFS='|' read -r bp be bd bav <<<"$before"; IFS='|' read -r ap ae ad aav <<<"$after"
+  IFACE_AVAILABLE=0; IFACE_PACKETS=0; IFACE_ERRORS=0; IFACE_DROPS=0; IFACE_DROP_RATE=""
+  [[ ${bav:-0} == 1 && ${aav:-0} == 1 ]] || return 0
+  ((ap>=bp && ae>=be && ad>=bd)) || return 0
+  IFACE_AVAILABLE=1
+  IFACE_PACKETS=$((ap-bp)); IFACE_ERRORS=$((ae-be)); IFACE_DROPS=$((ad-bd))
+  if ((IFACE_PACKETS>0)); then IFACE_DROP_RATE=$(awk -v d="$IFACE_DROPS" -v p="$IFACE_PACKETS" 'BEGIN{printf "%.4f",100*d/p}'); fi
 }
 
 ping_points(){
@@ -280,6 +290,7 @@ mtu_points(){
   if ((PMTU_VALUE>=1450)); then printf 10; elif ((PMTU_VALUE>=1400)); then printf 9; elif ((PMTU_VALUE>=1350)); then printf 7; elif ((PMTU_VALUE>=1300)); then printf 5; elif ((PMTU_VALUE>=1200)); then printf 2; else printf 0; fi
 }
 iface_points(){
+  ((IFACE_AVAILABLE==1 && IFACE_PACKETS>0)) || { printf 0; return; }
   ((IFACE_ERRORS>0)) && { printf 0; return; }
   if ((IFACE_PACKETS<200)); then [[ -z $IFACE_DROP_RATE || $IFACE_DROPS -eq 0 ]] && printf 8 || printf 5; return; fi
   if [[ -z $IFACE_DROP_RATE ]] || fcompare "$IFACE_DROP_RATE" '<=' .01; then printf 10; elif fcompare "$IFACE_DROP_RATE" '<=' .1; then printf 7; elif fcompare "$IFACE_DROP_RATE" '<=' .5; then printf 3; else printf 0; fi
@@ -289,17 +300,17 @@ signal_state_ping(){ [[ -z $PING_LOSS ]] && { printf UNKNOWN; return; }; if fcom
 signal_state_tcp(){ case $TCP_STATE in HEALTHY) if [[ -n $TCP_MBPS ]] && fcompare "$TCP_MBPS" '<' "$(awk -v e="$EXPECTED_MBPS" 'BEGIN{print e*.5}')"; then printf WARN; else printf GOOD; fi;; DEGRADED) printf WARN;; STALL|BLOCKED) printf BAD;; *) printf UNKNOWN;; esac; }
 signal_state_udp(){ [[ -z $UDP_LOSS ]] && { printf UNKNOWN; return; }; if fcompare "$UDP_LOSS" '>' 10; then printf BAD; elif fcompare "$UDP_LOSS" '>' 2; then printf WARN; else printf GOOD; fi; }
 signal_state_mtu(){ [[ -z $PMTU_VALUE ]] && { printf UNKNOWN; return; }; if ((PMTU_VALUE<1300)); then printf BAD; elif ((PMTU_VALUE<1400)); then printf WARN; else printf GOOD; fi; }
-signal_state_iface(){ ((IFACE_ERRORS>0)) && { printf BAD; return; }; [[ -z $IFACE_DROP_RATE ]] && { printf GOOD; return; }; if fcompare "$IFACE_DROP_RATE" '>' .5; then printf BAD; elif fcompare "$IFACE_DROP_RATE" '>' .1; then printf WARN; else printf GOOD; fi; }
+signal_state_iface(){ ((IFACE_AVAILABLE==1 && IFACE_PACKETS>0)) || { printf UNKNOWN; return; }; ((IFACE_ERRORS>0)) && { printf BAD; return; }; [[ -z $IFACE_DROP_RATE ]] && { printf GOOD; return; }; if fcompare "$IFACE_DROP_RATE" '>' .5; then printf BAD; elif fcompare "$IFACE_DROP_RATE" '>' .1; then printf WARN; else printf GOOD; fi; }
 
 compute_score(){
   local s pp tp up mp ip coverage=0
   pp=$(ping_points); tp=$(tcp_points); up=$(udp_points); mp=$(mtu_points); ip=$(iface_points)
   s=$((pp+tp+up+mp+ip))
   [[ -n $PING_LOSS && -n $PING_RTT ]] && coverage=$((coverage+1))
-  [[ -n $TCP_STATE ]] && coverage=$((coverage+1))
+  [[ $TCP_STATE == HEALTHY || $TCP_STATE == DEGRADED || $TCP_STATE == STALL || $TCP_STATE == BLOCKED ]] && coverage=$((coverage+1))
   [[ -n $UDP_LOSS ]] && coverage=$((coverage+1))
   [[ -n $PMTU_VALUE || $TEST_MODE == quick ]] && coverage=$((coverage+1))
-  ((IFACE_PACKETS>0 || IFACE_ERRORS>0 || IFACE_DROPS>0)) && coverage=$((coverage+1))
+  ((IFACE_AVAILABLE==1 && (IFACE_PACKETS>0 || IFACE_ERRORS>0 || IFACE_DROPS>0))) && coverage=$((coverage+1))
 
   if [[ $TCP_STATE == DEGRADED ]]; then ((s>64)) && s=64; fi
   if [[ $TCP_STATE == STALL ]]; then ((s>49)) && s=49; fi
@@ -313,29 +324,30 @@ compute_score(){
   if ((coverage>=5)); then FINAL_CONFIDENCE=HIGH; elif ((coverage>=3)); then FINAL_CONFIDENCE=MEDIUM; else FINAL_CONFIDENCE=LOW; fi
   [[ $TEST_MODE == quick && $FINAL_CONFIDENCE == HIGH ]] && FINAL_CONFIDENCE=MEDIUM
 
-  if [[ $TCP_STATE == STALL || $TCP_STATE == BLOCKED ]]; then FINAL_RECOMMENDATION="TRY ANOTHER SERVER"
+  if [[ $TCP_STATE == STALL ]]; then FINAL_RECOMMENDATION="TRY ANOTHER SERVER"
+  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_RECOMMENDATION="CHECK TARGET"
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_RECOMMENDATION="CAUTION"
   elif ((s>=70)); then FINAL_RECOMMENDATION="USE"
   elif ((s>=50)); then FINAL_RECOMMENDATION="CAUTION"
   else FINAL_RECOMMENDATION="TRY ANOTHER SERVER"; fi
 
   if [[ $TCP_STATE == STALL ]]; then FINAL_REASON="Sustained TCP data stalled although basic connectivity may look healthy."
-  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_REASON="TCP data could not pass to the test target."
+  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_REASON="No TCP data returned; verify the target listener/firewall first, then treat a confirmed failure as a blocked tested path."
   elif [[ -n $PING_LOSS ]] && fcompare "$PING_LOSS" '>' 2; then FINAL_REASON="Packet loss is too high for a stable server pair."
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_REASON="UDP packet loss is high on this server pair."
   elif [[ -n $IFACE_DROP_RATE ]] && fcompare "$IFACE_DROP_RATE" '>' .1; then FINAL_REASON="Local interface drops increased during the test."
   elif [[ $TCP_STATE == HEALTHY && -n $TCP_MBPS ]] && fcompare "$TCP_MBPS" '<' "$(awk -v e="$EXPECTED_MBPS" 'BEGIN{print e*.5}')"; then FINAL_REASON="TCP data passes, but effective transfer rate is well below the requested target."
   else FINAL_REASON="Core path checks completed without a major blocker."; fi
 }
-paint(){ local s=$1 c=$R; case $s in GOOD|EXCELLENT|USE|HIGH|RUNNING|READY) c=$G;; WARN|CAUTION|MEDIUM) c=$Y;; BAD|POOR|BLOCKED|STALL|"TRY ANOTHER SERVER") c=$E;; *) c=$DIM;; esac; printf '%b%s%b' "$B$c" "$s" "$R"; }
+paint(){ local s=$1 c=$R; case $s in GOOD|EXCELLENT|USE|HIGH|RUNNING|READY) c=$G;; WARN|CAUTION|MEDIUM|"CHECK TARGET") c=$Y;; BAD|POOR|BLOCKED|STALL|"TRY ANOTHER SERVER") c=$E;; *) c=$DIM;; esac; printf '%b%s%b' "$B$c" "$s" "$R"; }
 result_row(){ printf ' %-16s %-45.45s ' "$1" "$2"; paint "$3"; printf '\n'; }
 print_report(){
   local ping_result tcp_result udp_result mtu_result iface_result
   ping_result="${PING_LOSS:-N/A}% loss | $(fmt "$PING_RTT" 1) ms | var $(fmt "$PING_VAR" 1) ms"
-  case $TCP_STATE in HEALTHY) tcp_result="$(fmt "$TCP_MBPS" 1) Mbps effective | $TCP_BYTES_RECV/$TCP_BYTES_SENT B";; STALL) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | stalled";; DEGRADED) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | partial";; *) tcp_result="no verified data";; esac
+  case $TCP_STATE in HEALTHY) tcp_result="$(fmt "$TCP_MBPS" 1) Mbps effective | $TCP_BYTES_RECV/$TCP_BYTES_SENT B";; STALL) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | stalled";; DEGRADED) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | partial";; REFUSED) tcp_result="test port actively refused";; *) tcp_result="no verified data";; esac
   udp_result="$UDP_RECV/$UDP_SENT | ${UDP_LOSS:-N/A}% loss | bulk $((UDP_BULK_RECV/1000))/$((UDP_BULK_SENT/1000)) KB"
   mtu_result="${PMTU_VALUE:+$PMTU_VALUE bytes}"; [[ -z $mtu_result ]] && mtu_result="not sampled in quick mode"
-  iface_result="${IFACE_DROP_RATE:-N/A}% drops | $IFACE_ERRORS errors | $IFACE_PACKETS packets"
+  if ((IFACE_AVAILABLE==1 && IFACE_PACKETS>0)); then iface_result="${IFACE_DROP_RATE:-N/A}% drops | $IFACE_ERRORS errors | $IFACE_PACKETS packets"; elif ((IFACE_AVAILABLE==1)); then iface_result="no packet delta sampled"; else iface_result="not available"; fi
 
   printf '\n%bTUNNEL READINESS - %s%b\n' "$B$C" "$(forward_label)" "$R"
   printf '%s\n' '------------------------------------------------------------------------------------------'
@@ -363,13 +375,20 @@ save_report(){
     printf 'TCP: %s, %s/%s bytes, %s Mbps effective\n' "$TCP_STATE" "$TCP_BYTES_RECV" "$TCP_BYTES_SENT" "${TCP_MBPS:-N/A}"
     printf 'UDP: %s/%s probes, %s%% probe loss, %s/%s bulk bytes, %s%% bulk loss, %s%% effective loss, %s-byte packets\n' "$UDP_RECV" "$UDP_SENT" "${UDP_PROBE_LOSS:-N/A}" "$UDP_BULK_RECV" "$UDP_BULK_SENT" "${UDP_BULK_LOSS:-N/A}" "${UDP_LOSS:-N/A}" "$UDP_PACKET_BYTES"
     printf 'PMTU: %s\n' "${PMTU_VALUE:-N/A}"
-    printf 'Interface: %s packets, %s errors, %s drops, %s%% drop rate\n' "$IFACE_PACKETS" "$IFACE_ERRORS" "$IFACE_DROPS" "${IFACE_DROP_RATE:-N/A}"
+    if ((IFACE_AVAILABLE==1)); then printf 'Interface: %s packets, %s errors, %s drops, %s%% drop rate\n' "$IFACE_PACKETS" "$IFACE_ERRORS" "$IFACE_DROPS" "${IFACE_DROP_RATE:-N/A}"; else printf 'Interface: N/A\n'; fi
     printf 'Scope: pair/direction and tested ports only; protocol-specific filtering may differ.\n'
   } >"$tmp"
   root mkdir -p "$LOG_DIR" >/dev/null 2>&1 || return 0
   root cp "$tmp" "$LAST_REPORT" 2>/dev/null || true
 }
-reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";PMTU_VALUE="";IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
+reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";UDP_REFUSED=0;PMTU_VALUE="";IFACE_AVAILABLE=0;IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
+target_refused_notice(){
+  local proto=$1 port=$2
+  printf '\n'
+  err "$proto test port $port was actively refused by the peer."
+  warn "Verify the peer Tunnel Checker target is RUNNING and that host/provider firewall rules allow this test port."
+  warn "No readiness score was produced because a rejected test target is not evidence that the server pair itself is poor."
+}
 run_test(){
   TEST_MODE=$1
   ensure_deps || { pause; return 1; }
@@ -377,8 +396,14 @@ run_test(){
   prepare || { pause; return 1; }
   banner
   printf '\nRunning %s test for %s ...\n\n' "$([[ $TEST_MODE == quick ]] && printf quick || printf readiness)" "$(forward_label)"
-  local before after; before=$(iface_stats before)
-  if [[ $TEST_MODE == quick ]]; then ping_test 8; tcp_data_test; udp_data_test 5; else ping_test 20; tcp_data_test; udp_data_test 20; pmtu_test; fi
+  local before after ping_count=20 udp_count=20; before=$(iface_stats before)
+  if [[ $TEST_MODE == quick ]]; then ping_count=8; udp_count=5; fi
+  ping_test "$ping_count"
+  tcp_data_test
+  if [[ $TCP_STATE == REFUSED ]]; then target_refused_notice TCP "$TEST_PORT"; pause; return 2; fi
+  udp_data_test "$udp_count"
+  if ((UDP_REFUSED==1)); then target_refused_notice UDP "$UDP_PORT"; pause; return 2; fi
+  [[ $TEST_MODE == quick ]] || pmtu_test
   after=$(iface_stats after); iface_delta "$before" "$after"
   compute_score; print_report; save_report
   printf '\nLast summary: %s\n' "$LAST_REPORT"

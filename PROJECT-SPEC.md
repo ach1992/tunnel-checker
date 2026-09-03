@@ -53,6 +53,7 @@ The readiness score is advisory but must remain useful when some optional eviden
 
 - Core independent TCP/UDP evidence may drive a score without requiring an application-specific throughput tool.
 - Missing optional evidence lowers confidence rather than automatically making the whole result unusable.
+- An explicitly refused diagnostic port is target/firewall setup evidence, not proof that the server pair is poor; the main readiness flow must stop without publishing a score and tell the user to verify the target/port.
 - Confirmed severe failures may cap the score/verdict even when other metrics are healthy.
 - UDP scoring uses the worse observed loss across practical-size probes and the bounded sustained UDP sample.
 - Confidence reflects evidence coverage, not optimism.
@@ -69,6 +70,7 @@ The direct recommendation should be one of:
 
 - `USE`
 - `CAUTION`
+- `CHECK TARGET` when zero-data evidence cannot distinguish path blocking from target/firewall setup
 - `TRY ANOTHER SERVER`
 
 ## Workflow

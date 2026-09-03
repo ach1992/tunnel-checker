@@ -10,7 +10,8 @@ grep -Fq 'server-pair readiness tester' "$ROOT/PROJECT-SPEC.md"
 grep -Fq 'tested pair, direction, and ports' "$ROOT/README.md"
 grep -Fq 'protocol-specific filtering may differ' "$ROOT/tunnel-checker.sh"
 grep -Fq 'TRY ANOTHER SERVER' "$ROOT/README.md"
-grep -Fq 'if [ "$(id -u)" -eq 0 ]; then bash;' "$ROOT/README.md"
+grep -Fq 'if [ "$(id -u)" -eq 0 ]; then bash && /usr/local/bin/tunnel-checker;' "$ROOT/README.md"
+grep -Fq 'sudo bash && sudo /usr/local/bin/tunnel-checker' "$ROOT/README.md"
 grep -Fq 'sudo is unavailable' "$ROOT/README.md"
 grep -Fq 'SUDO_USER' "$ROOT/install.sh"
 grep -Fq 'Run: tunnel-checker' "$ROOT/install.sh"
@@ -60,6 +61,7 @@ UDP_BULK_RECV=240000
 UDP_BULK_LOSS=0
 UDP_LOSS=0
 PMTU_VALUE=1500
+IFACE_AVAILABLE=1
 IFACE_PACKETS=5000
 IFACE_ERRORS=0
 IFACE_DROPS=0
@@ -80,6 +82,14 @@ compute_score
 [[ $FINAL_CONFIDENCE == HIGH ]]
 [[ $FINAL_RECOMMENDATION == 'TRY ANOTHER SERVER' ]]
 grep -Fq 'Sustained TCP data stalled' <<<"$FINAL_REASON"
+
+TCP_STATE=BLOCKED
+TCP_BYTES_RECV=0
+TCP_MBPS=""
+compute_score
+[[ $FINAL_SCORE -le 39 ]]
+[[ $FINAL_RECOMMENDATION == 'CHECK TARGET' ]]
+grep -Fq 'verify the target listener/firewall first' <<<"$FINAL_REASON"
 
 TCP_STATE=HEALTHY
 TCP_BYTES_RECV=$TCP_BYTES_SENT
@@ -130,5 +140,47 @@ EXPECTED_MBPS=50
 [[ "$(payload_bytes)" == 3125000 ]]
 EXPECTED_MBPS=1000
 [[ "$(payload_bytes)" == 8388608 ]]
+
+
+# Explicitly unavailable interface statistics must not earn score or show GOOD.
+IFACE_AVAILABLE=0
+IFACE_PACKETS=0
+IFACE_ERRORS=0
+IFACE_DROPS=0
+IFACE_DROP_RATE=""
+[[ "$(iface_points)" == 0 ]]
+[[ "$(signal_state_iface)" == UNKNOWN ]]
+iface_delta '100|0|0|0' '200|0|0|0'
+[[ $IFACE_AVAILABLE -eq 0 ]]
+iface_delta '100|1|2|1' '250|1|2|1'
+[[ $IFACE_AVAILABLE -eq 1 ]]
+[[ $IFACE_PACKETS -eq 150 ]]
+[[ "$(iface_points)" == 8 ]]
+iface_delta '250|2|3|1' '200|1|2|1'
+[[ $IFACE_AVAILABLE -eq 0 ]]
+
+# A clear peer-side refusal is a target/port setup condition, not generic path failure.
+refused_log=$(mktemp)
+printf '%s\n' 'socat E connect(...): Connection refused' >"$refused_log"
+connection_refused "$refused_log"
+rm -f "$refused_log"
+
+# A refused TCP target must stop the main flow before UDP/scoring and explain the setup problem.
+flow_marker=$(mktemp)
+rm -f "$flow_marker"
+ensure_deps(){ return 0; }
+prepare(){ ROLE=iran; set_peer_role; PEER_IP=192.0.2.10; TEST_PORT=5201; UDP_PORT=5202; LOCAL_IFACE=""; return 0; }
+banner(){ :; }
+ping_test(){ PING_LOSS=0; PING_RTT=1; PING_VAR=0; }
+tcp_data_test(){ TCP_STATE=REFUSED; }
+udp_data_test(){ printf '%s\n' udp >>"$flow_marker"; }
+compute_score(){ printf '%s\n' score >>"$flow_marker"; }
+pause(){ :; }
+flow_rc=0
+flow_out=$(run_test readiness 2>&1) || flow_rc=$?
+[[ $flow_rc -eq 2 ]]
+grep -Fq 'TCP test port 5201 was actively refused by the peer.' <<<"$flow_out"
+grep -Fq 'No readiness score was produced' <<<"$flow_out"
+[[ ! -e $flow_marker ]]
 
 printf '%s\n' 'Smoke tests passed.'

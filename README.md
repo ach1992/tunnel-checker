@@ -104,6 +104,10 @@ Recommendation: TRY ANOTHER SERVER
 
 UDP success remains visible separately; Tunnel Checker does not infer UDP quality from a TCP failure.
 
+If a diagnostic TCP/UDP port is **actively refused**, Tunnel Checker treats that as a test-target/firewall setup problem and does not publish a readiness score. Verify that the peer target is `RUNNING` and that the tested ports are allowed, then rerun.
+
+If TCP returns **zero data** without an explicit refusal, the result can still be a silent firewall/path drop, so the direct action is `CHECK TARGET` rather than immediately blaming the server pair. A partial-transfer `STALL` remains stronger path evidence and can still recommend `TRY ANOTHER SERVER`.
+
 ## Score meaning
 
 | Score | Verdict | Practical meaning |

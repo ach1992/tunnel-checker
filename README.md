@@ -53,7 +53,7 @@ Default ports are:
 - TCP `5201`
 - UDP `5202`
 
-Tunnel Checker does not modify firewall rules. Allow these ports only from the peer IP when practical.
+Tunnel Checker does not modify firewall rules. Before testing, make sure the peer test target is `RUNNING` and the chosen TCP port plus paired UDP port are allowed by host/provider firewall rules (restricted to the peer IP when practical). The score assumes these prerequisites are already satisfied; under that assumption, failed checks are interpreted primarily as path/filtering restrictions.
 
 On the other endpoint:
 
@@ -103,6 +103,10 @@ Recommendation: TRY ANOTHER SERVER
 ```
 
 UDP success remains visible separately; Tunnel Checker does not infer UDP quality from a TCP failure.
+
+Tunnel Checker deliberately does **not** turn failed data-path checks into an inconclusive result just because a firewall/setup mistake is theoretically possible. With the expected setup above, an actively refused TCP port or zero returned TCP data is scored as a failed tested path and can recommend `TRY ANOTHER SERVER`. If you suspect the test target or firewall was not prepared correctly, fix that setup and rerun before acting on the score.
+
+A partial-transfer `STALL` remains especially strong path evidence because data started moving and then stopped.
 
 ## Score meaning
 

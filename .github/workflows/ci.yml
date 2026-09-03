@@ -15,5 +15,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Install network smoke dependency
+        run: sudo apt-get update && sudo apt-get install -y socat
+
       - name: Bash syntax and smoke tests
-        run: bash tests/smoke.sh
+        run: bash tests/smoke.sh && bash tests/network-smoke.sh

@@ -53,6 +53,8 @@ The readiness score is advisory but must remain useful when some optional eviden
 
 - Core independent TCP/UDP evidence may drive a score without requiring an application-specific throughput tool.
 - Missing optional evidence lowers confidence rather than automatically making the whole result unusable.
+- Scoring assumes the peer test target is running and the chosen TCP/UDP test ports are allowed by host/provider firewall rules. These prerequisites must be shown prominently before testing.
+- Once those prerequisites are met, failed transport checks remain path/filtering evidence and must still contribute to the score; setup uncertainty is a caveat for the user to re-check, not a reason to suppress the result.
 - Confirmed severe failures may cap the score/verdict even when other metrics are healthy.
 - UDP scoring uses the worse observed loss across practical-size probes and the bounded sustained UDP sample.
 - Confidence reflects evidence coverage, not optimism.
@@ -78,8 +80,9 @@ The normal workflow is SSH-free.
 1. Install on both endpoints.
 2. Save each endpoint role as `IRAN` or `FOREIGN`.
 3. Prepare endpoint B as a temporary test target.
-4. Run the readiness test from endpoint A toward B.
-5. If the opposite initiation perspective matters, swap target/client roles and repeat from B toward A.
+4. Ensure the chosen TCP port and paired UDP port are allowed through host/provider firewall rules.
+5. Run the readiness test from endpoint A toward B.
+6. If the opposite initiation perspective matters, swap target/client roles and repeat from B toward A.
 
 One run must already provide a useful pair/direction assessment. The second run is confirmation for the opposite initiation perspective, not a prerequisite for every useful result.
 

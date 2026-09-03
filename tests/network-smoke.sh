@@ -80,7 +80,7 @@ udp_data_test 20
 [[ $UDP_BULK_RECV -eq $UDP_BULK_SENT ]]
 [[ $UDP_LOSS == 0.00 ]]
 
-# Once the TCP listener is gone, a localhost refusal must not be classified as a bad path.
+# Once the TCP listener is gone, preserve explicit refusal context while scoring it as BLOCKED under the documented test assumptions.
 TCP_CHILD=$(child_pid_matching "$TCP_WRAPPER" "TCP4-LISTEN:$BASE" || true)
 [[ -n $TCP_CHILD ]] && kill "$TCP_CHILD" 2>/dev/null || true
 kill "$TCP_WRAPPER" 2>/dev/null || true

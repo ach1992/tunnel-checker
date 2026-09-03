@@ -38,11 +38,11 @@ fi
 ROLE=""; PEER_ROLE=""; PEER_HOST=""; PEER_IP=""; LOCAL_IFACE=""; LOCAL_SRC=""
 TEST_PORT=$DEFAULT_PORT; UDP_PORT=$((DEFAULT_PORT+1)); EXPECTED_MBPS=$DEFAULT_MBPS; TEST_MODE=readiness; TMP_DIR=""
 PING_LOSS=""; PING_RTT=""; PING_VAR=""
-TCP_STATE=""; TCP_BYTES_SENT=0; TCP_BYTES_RECV=0; TCP_MBPS=""; TCP_STALLED=0
+TCP_STATE=""; TCP_BYTES_SENT=0; TCP_BYTES_RECV=0; TCP_MBPS=""; TCP_STALLED=0; TCP_REFUSED=0
 UDP_SENT=0; UDP_RECV=0; UDP_PROBE_LOSS=""; UDP_LOSS=""; UDP_PACKET_BYTES=1200; UDP_BULK_SENT=0; UDP_BULK_RECV=0; UDP_BULK_LOSS=""; UDP_REFUSED=0
 PMTU_VALUE=""
 IFACE_AVAILABLE=0; IFACE_PACKETS=0; IFACE_ERRORS=0; IFACE_DROPS=0; IFACE_DROP_RATE=""
-FINAL_SCORE=0; FINAL_VERDICT=""; FINAL_CONFIDENCE=""; FINAL_RECOMMENDATION=""; FINAL_REASON=""
+FINAL_SCORE=0; FINAL_VERDICT=""; FINAL_CONFIDENCE=""; FINAL_RECOMMENDATION=""; FINAL_REASON=""; ASSUMPTIONS_SHOWN=0
 
 cleanup(){ [[ -n $TMP_DIR && -d $TMP_DIR ]] && rm -rf "$TMP_DIR"; return 0; }
 trap cleanup EXIT
@@ -81,6 +81,15 @@ banner(){
     printf ' Endpoint: %b%s%b    Local IPv4: %b%s%b    Peer: %b%s%b\n' "$B$C" "$(role_name "$ROLE")" "$R" "$B$C" "$(local_ipv4)" "$R" "$B$C" "$(role_name "$PEER_ROLE")" "$R"
     printf ' Direction: %b%s%b\n' "$B" "$(forward_label)" "$R"
   fi
+}
+test_assumptions_notice(){
+  ((ASSUMPTIONS_SHOWN==1)) && return 0
+  printf '\n%bBefore testing%b\n' "$B$C" "$R"
+  printf ' - Prepare the peer Tunnel Checker test target first.\n'
+  printf ' - Allow the chosen TCP port and paired UDP port through host/provider firewall rules.\n'
+  printf ' - With those prerequisites met, failed checks are interpreted primarily as path/filtering restrictions.\n'
+  printf ' - If setup is uncertain, verify the target/firewall and rerun before acting on the score.\n'
+  ASSUMPTIONS_SHOWN=1
 }
 
 load_role(){ ROLE=""; [[ -r $ROLE_FILE ]] && ROLE=$(tr -d '[:space:]' <"$ROLE_FILE" 2>/dev/null || true); [[ $ROLE == iran || $ROLE == foreign ]] || ROLE=""; [[ -n $ROLE ]] && set_peer_role; }
@@ -170,8 +179,9 @@ tcp_data_test(){
   end=$(date +%s%3N); elapsed=$((end-start)); ((elapsed<1)) && elapsed=1
   TCP_BYTES_RECV=$(stat -c %s "$out" 2>/dev/null || printf 0); TCP_STALLED=$stalled
   if ((TCP_BYTES_RECV>=${#token})) && ! cmp -n "${#token}" "$payload" "$out" >/dev/null 2>&1; then TCP_BYTES_RECV=0; fi
+  TCP_REFUSED=0
   if ((TCP_BYTES_RECV==0)) && connection_refused "$er"; then
-    TCP_STATE=REFUSED
+    TCP_REFUSED=1; TCP_STATE=BLOCKED
   elif ((TCP_BYTES_RECV>=TCP_BYTES_SENT)); then
     TCP_STATE=HEALTHY
     TCP_MBPS=$(awk -v b="$TCP_BYTES_RECV" -v ms="$elapsed" 'BEGIN{printf "%.2f",b*8/(ms*1000)}')
@@ -208,15 +218,15 @@ udp_data_test(){
   UDP_LOSS=$UDP_PROBE_LOSS
 
   # A small sustained sample complements the probes without turning the readiness
-  # check into a bandwidth benchmark. 200 datagrams gives 0.5% loss resolution
-  # while keeping target process churn and generated traffic bounded.
+  # check into a bandwidth benchmark. 200 datagrams gives 0.5% loss resolution;
+  # pacing each datagram avoids making the diagnostic echo target itself a burst-drop source.
   if [[ $TEST_MODE == readiness && $UDP_REFUSED -eq 0 && $good -gt 0 ]]; then
     UDP_BULK_SENT=$((UDP_PACKET_BYTES*200))
     bulkout="$TMP_DIR/udp-bulk.out"; bulkerr="$TMP_DIR/udp-bulk.err"
     (
-      for ((batch=0;batch<20;batch++)); do
-        dd if=/dev/zero bs="$UDP_PACKET_BYTES" count=10 status=none
-        sleep 0.025
+      for ((batch=0;batch<200;batch++)); do
+        dd if=/dev/zero bs="$UDP_PACKET_BYTES" count=1 status=none
+        sleep 0.01
       done
     ) | timeout 5 socat -b"$UDP_PACKET_BYTES" STDIO "UDP4-DATAGRAM:$PEER_IP:$UDP_PORT" >"$bulkout" 2>"$bulkerr" || true
     UDP_BULK_RECV=$(stat -c %s "$bulkout" 2>/dev/null || printf 0)
@@ -325,27 +335,29 @@ compute_score(){
   [[ $TEST_MODE == quick && $FINAL_CONFIDENCE == HIGH ]] && FINAL_CONFIDENCE=MEDIUM
 
   if [[ $TCP_STATE == STALL ]]; then FINAL_RECOMMENDATION="TRY ANOTHER SERVER"
-  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_RECOMMENDATION="CHECK TARGET"
+  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_RECOMMENDATION="TRY ANOTHER SERVER"
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_RECOMMENDATION="CAUTION"
   elif ((s>=70)); then FINAL_RECOMMENDATION="USE"
   elif ((s>=50)); then FINAL_RECOMMENDATION="CAUTION"
   else FINAL_RECOMMENDATION="TRY ANOTHER SERVER"; fi
 
   if [[ $TCP_STATE == STALL ]]; then FINAL_REASON="Sustained TCP data stalled although basic connectivity may look healthy."
-  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_REASON="No TCP data returned; verify the target listener/firewall first, then treat a confirmed failure as a blocked tested path."
+  elif ((TCP_REFUSED==1)); then FINAL_REASON="TCP test port was actively refused; assuming the peer target and test ports are prepared, treat this as a failed tested path. If setup is uncertain, verify target/firewall and rerun."
+  elif [[ $TCP_STATE == BLOCKED ]]; then FINAL_REASON="No TCP data returned; assuming the peer target and test ports are prepared, this is consistent with path filtering/blocking. If setup is uncertain, verify target/firewall and rerun."
   elif [[ -n $PING_LOSS ]] && fcompare "$PING_LOSS" '>' 2; then FINAL_REASON="Packet loss is too high for a stable server pair."
+  elif ((UDP_REFUSED==1)); then FINAL_REASON="UDP test port was actively refused; assuming the peer target and test ports are prepared, treat this as failed UDP path evidence. If setup is uncertain, verify target/firewall and rerun."
   elif [[ -n $UDP_LOSS ]] && fcompare "$UDP_LOSS" '>' 10; then FINAL_REASON="UDP packet loss is high on this server pair."
   elif [[ -n $IFACE_DROP_RATE ]] && fcompare "$IFACE_DROP_RATE" '>' .1; then FINAL_REASON="Local interface drops increased during the test."
   elif [[ $TCP_STATE == HEALTHY && -n $TCP_MBPS ]] && fcompare "$TCP_MBPS" '<' "$(awk -v e="$EXPECTED_MBPS" 'BEGIN{print e*.5}')"; then FINAL_REASON="TCP data passes, but effective transfer rate is well below the requested target."
   else FINAL_REASON="Core path checks completed without a major blocker."; fi
 }
-paint(){ local s=$1 c=$R; case $s in GOOD|EXCELLENT|USE|HIGH|RUNNING|READY) c=$G;; WARN|CAUTION|MEDIUM|"CHECK TARGET") c=$Y;; BAD|POOR|BLOCKED|STALL|"TRY ANOTHER SERVER") c=$E;; *) c=$DIM;; esac; printf '%b%s%b' "$B$c" "$s" "$R"; }
+paint(){ local s=$1 c=$R; case $s in GOOD|EXCELLENT|USE|HIGH|RUNNING|READY) c=$G;; WARN|CAUTION|MEDIUM) c=$Y;; BAD|POOR|BLOCKED|STALL|"TRY ANOTHER SERVER") c=$E;; *) c=$DIM;; esac; printf '%b%s%b' "$B$c" "$s" "$R"; }
 result_row(){ printf ' %-16s %-45.45s ' "$1" "$2"; paint "$3"; printf '\n'; }
 print_report(){
   local ping_result tcp_result udp_result mtu_result iface_result
   ping_result="${PING_LOSS:-N/A}% loss | $(fmt "$PING_RTT" 1) ms | var $(fmt "$PING_VAR" 1) ms"
-  case $TCP_STATE in HEALTHY) tcp_result="$(fmt "$TCP_MBPS" 1) Mbps effective | $TCP_BYTES_RECV/$TCP_BYTES_SENT B";; STALL) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | stalled";; DEGRADED) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | partial";; REFUSED) tcp_result="test port actively refused";; *) tcp_result="no verified data";; esac
-  udp_result="$UDP_RECV/$UDP_SENT | ${UDP_LOSS:-N/A}% loss | bulk $((UDP_BULK_RECV/1000))/$((UDP_BULK_SENT/1000)) KB"
+  if ((TCP_REFUSED==1)); then tcp_result="test port actively refused"; else case $TCP_STATE in HEALTHY) tcp_result="$(fmt "$TCP_MBPS" 1) Mbps effective | $TCP_BYTES_RECV/$TCP_BYTES_SENT B";; STALL) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | stalled";; DEGRADED) tcp_result="$TCP_BYTES_RECV/$TCP_BYTES_SENT B | partial";; *) tcp_result="no verified data";; esac; fi
+  if ((UDP_REFUSED==1)); then udp_result="$UDP_RECV/$UDP_SENT | ${UDP_LOSS:-N/A}% loss | test port actively refused"; else udp_result="$UDP_RECV/$UDP_SENT | ${UDP_LOSS:-N/A}% loss | bulk $((UDP_BULK_RECV/1000))/$((UDP_BULK_SENT/1000)) KB"; fi
   mtu_result="${PMTU_VALUE:+$PMTU_VALUE bytes}"; [[ -z $mtu_result ]] && mtu_result="not sampled in quick mode"
   if ((IFACE_AVAILABLE==1 && IFACE_PACKETS>0)); then iface_result="${IFACE_DROP_RATE:-N/A}% drops | $IFACE_ERRORS errors | $IFACE_PACKETS packets"; elif ((IFACE_AVAILABLE==1)); then iface_result="no packet delta sampled"; else iface_result="not available"; fi
 
@@ -381,28 +393,19 @@ save_report(){
   root mkdir -p "$LOG_DIR" >/dev/null 2>&1 || return 0
   root cp "$tmp" "$LAST_REPORT" 2>/dev/null || true
 }
-reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";UDP_REFUSED=0;PMTU_VALUE="";IFACE_AVAILABLE=0;IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
-target_refused_notice(){
-  local proto=$1 port=$2
-  printf '\n'
-  err "$proto test port $port was actively refused by the peer."
-  warn "Verify the peer Tunnel Checker target is RUNNING and that host/provider firewall rules allow this test port."
-  warn "No readiness score was produced because a rejected test target is not evidence that the server pair itself is poor."
-}
+reset_results(){ PING_LOSS="";PING_RTT="";PING_VAR="";TCP_STATE="";TCP_BYTES_SENT=0;TCP_BYTES_RECV=0;TCP_MBPS="";TCP_STALLED=0;TCP_REFUSED=0;UDP_SENT=0;UDP_RECV=0;UDP_PROBE_LOSS="";UDP_LOSS="";UDP_BULK_SENT=0;UDP_BULK_RECV=0;UDP_BULK_LOSS="";UDP_REFUSED=0;PMTU_VALUE="";IFACE_AVAILABLE=0;IFACE_PACKETS=0;IFACE_ERRORS=0;IFACE_DROPS=0;IFACE_DROP_RATE="";FINAL_SCORE=0;FINAL_VERDICT="";FINAL_CONFIDENCE="";FINAL_RECOMMENDATION="";FINAL_REASON=""; }
 run_test(){
   TEST_MODE=$1
   ensure_deps || { pause; return 1; }
   reset_results; TMP_DIR=$(mktemp -d)
   prepare || { pause; return 1; }
-  banner
+  banner; test_assumptions_notice
   printf '\nRunning %s test for %s ...\n\n' "$([[ $TEST_MODE == quick ]] && printf quick || printf readiness)" "$(forward_label)"
   local before after ping_count=20 udp_count=20; before=$(iface_stats before)
   if [[ $TEST_MODE == quick ]]; then ping_count=8; udp_count=5; fi
   ping_test "$ping_count"
   tcp_data_test
-  if [[ $TCP_STATE == REFUSED ]]; then target_refused_notice TCP "$TEST_PORT"; pause; return 2; fi
   udp_data_test "$udp_count"
-  if ((UDP_REFUSED==1)); then target_refused_notice UDP "$UDP_PORT"; pause; return 2; fi
   [[ $TEST_MODE == quick ]] || pmtu_test
   after=$(iface_stats after); iface_delta "$before" "$after"
   compute_score; print_report; save_report
@@ -420,7 +423,7 @@ socket_owned_by_pid(){ local proto=$1 port=$2 pid=$3 out; if [[ $proto == tcp ]]
 listener_running(){
   local kind=$1 pidfile port proto marker p args child
   if [[ $kind == tcp ]]; then pidfile=$TCP_PID_FILE; port=$(cat "$PORT_FILE" 2>/dev/null || printf 0); proto=tcp; marker="TCP4-LISTEN:$port"
-  else pidfile=$UDP_PID_FILE; port=$(( $(cat "$PORT_FILE" 2>/dev/null || printf 0) + 1 )); proto=udp; marker="UDP4-RECVFROM:$port"; fi
+  else pidfile=$UDP_PID_FILE; port=$(( $(cat "$PORT_FILE" 2>/dev/null || printf 0) + 1 )); proto=udp; marker="UDP4-LISTEN:$port"; fi
   p=$(pid_value "$pidfile"); [[ -n $p && $port -gt 0 ]] || return 1
   kill -0 "$p" 2>/dev/null || return 1
   args=$(ps -p "$p" -o args= 2>/dev/null || true); [[ $args == *timeout* && $args == *socat* && $args == *"$marker"* ]] || return 1
@@ -450,6 +453,8 @@ stop_server_internal(){
   local port; port=$(cat "$PORT_FILE" 2>/dev/null || printf 0)
   if [[ $port =~ ^[0-9]+$ && $port -gt 0 ]]; then
     stop_owned_wrapper "$TCP_PID_FILE" "TCP4-LISTEN:$port"
+    stop_owned_wrapper "$UDP_PID_FILE" "UDP4-LISTEN:$((port+1))"
+    # Compatibility: stop a target started by the previous UDP4-RECVFROM implementation.
     stop_owned_wrapper "$UDP_PID_FILE" "UDP4-RECVFROM:$((port+1))"
   fi
   root rm -f "$PORT_FILE" "$TCP_PID_FILE" "$UDP_PID_FILE" 2>/dev/null || true
@@ -466,7 +471,7 @@ start_server(){
   printf '%s\n' "$port" | root tee "$PORT_FILE" >/dev/null || return 1
   sec=$((mins*60))
   launch_timeout "$sec" "$TCP_PID_FILE" "$TCP_LOG" socat "TCP4-LISTEN:$port,reuseaddr,fork" EXEC:/bin/cat || true
-  launch_timeout "$sec" "$UDP_PID_FILE" "$UDP_LOG" socat "UDP4-RECVFROM:$((port+1)),reuseaddr,fork" EXEC:/bin/cat || true
+  launch_timeout "$sec" "$UDP_PID_FILE" "$UDP_LOG" socat "UDP4-LISTEN:$((port+1)),reuseaddr,fork" EXEC:/bin/cat || true
   sleep 1
   if listener_running tcp && listener_running udp; then
     warn "Temporary unauthenticated test listeners: TCP $port and UDP $((port+1)). Restrict them to the peer IP when practical."
@@ -524,7 +529,7 @@ uninstall_self(){
 menu(){
   ensure_role || return 1
   while :; do
-    clear 2>/dev/null || true; banner
+    clear 2>/dev/null || true; banner; test_assumptions_notice
     printf '\n  %b1)%b Tunnel readiness test: %s\n' "$C$B" "$R" "$(forward_label)"
     printf '  %b2)%b Quick connectivity check\n' "$C$B" "$R"
     printf '  %b3)%b Prepare this %s server as test target\n' "$C$B" "$R" "$(role_name "$ROLE")"

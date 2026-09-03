@@ -49,7 +49,7 @@ printf '%s\n' "$BASE" >"$PORT_FILE"
 timeout --signal=TERM 30 socat "TCP4-LISTEN:$BASE,reuseaddr,fork" EXEC:/bin/cat >"$TCP_LOG" 2>&1 &
 TCP_WRAPPER=$!
 printf '%s\n' "$TCP_WRAPPER" >"$TCP_PID_FILE"
-timeout --signal=TERM 30 socat "UDP4-RECVFROM:$((BASE+1)),reuseaddr,fork" EXEC:/bin/cat >"$UDP_LOG" 2>&1 &
+timeout --signal=TERM 30 socat "UDP4-LISTEN:$((BASE+1)),reuseaddr,fork" EXEC:/bin/cat >"$UDP_LOG" 2>&1 &
 UDP_WRAPPER=$!
 printf '%s\n' "$UDP_WRAPPER" >"$UDP_PID_FILE"
 
@@ -93,6 +93,16 @@ done
 ! socket_busy tcp "$BASE"
 rm -rf "$TMP_DIR"; TMP_DIR="$WORK/refused"; mkdir -p "$TMP_DIR"
 tcp_data_test >/dev/null
-[[ $TCP_STATE == REFUSED ]]
+[[ $TCP_STATE == BLOCKED ]]
+[[ $TCP_REFUSED -eq 1 ]]
+
+# The production stop path must recognize the UDP4-LISTEN marker and release it.
+stop_server_internal
+UDP_WRAPPER=""
+for _ in $(seq 1 30); do
+  socket_busy udp "$((BASE+1))" || break
+  sleep 0.1
+done
+! socket_busy udp "$((BASE+1))"
 
 printf '%s\n' 'Network smoke tests passed.'

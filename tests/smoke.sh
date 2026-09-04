@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash -n "$ROOT/tunnel-checker.sh"
 bash -n "$ROOT/install.sh"
-[[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.4.1" ]]
+[[ "$(bash "$ROOT/tunnel-checker.sh" --version)" == "0.5.0" ]]
 
 grep -Fq 'server-pair readiness tester' "$ROOT/PROJECT-SPEC.md"
 grep -Fq 'tested pair, direction, and ports' "$ROOT/README.md"

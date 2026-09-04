@@ -1,22 +1,39 @@
 # Tunnel Checker
 
-Tunnel Checker answers one practical question quickly:
+Tunnel Checker is a small Bash tool for checking whether the network path between a specific **Iran server** and a specific **Foreign server** is likely suitable for tunneling and sustained data transfer.
 
-> **Is this Iran server <-> this specific Foreign server path likely good enough for tunneling/data transfer?**
+It tests the actual server pair instead of relying on ping alone, then returns a compact **0-100 readiness score**, verdict, confidence level, and recommendation.
 
-A good ping is not enough. Iran-side filtering/routing can make one Foreign IP work normally while another stalls or fails. Tunnel Checker tests the actual pair and gives a compact **0-100 readiness score**, confidence, and a direct recommendation.
+## What it checks
+
+The normal readiness test measures:
+
+- ICMP packet loss, latency, and latency variation;
+- sustained TCP data transfer;
+- UDP continuity and packet loss using practical-size datagrams plus a bounded sustained sample;
+- path MTU;
+- local interface errors and drops observed during the test.
+
+The tool is designed as a **server-pair readiness tester**. It does not create, configure, or manage tunnels.
+
+## Supported environment
+
+- Debian and Ubuntu Linux
+- Bash
+- IPv4 for the complete current test flow
+- root or `sudo` access for installation and listener management
 
 ## Install
 
-Recommended one-line installer (works both from a root shell and from a sudo-capable user):
+Recommended one-line installer:
 
 ```bash
 curl -fsSL -H 'Accept: application/vnd.github.raw+json' -H 'X-GitHub-Api-Version: 2022-11-28' -H 'User-Agent: tunnel-checker' 'https://api.github.com/repos/ach1992/tunnel-checker/contents/install.sh?ref=main' | { if [ "$(id -u)" -eq 0 ]; then bash && /usr/local/bin/tunnel-checker; elif command -v sudo >/dev/null 2>&1; then sudo bash && sudo /usr/local/bin/tunnel-checker; else printf '%s\n' 'ERROR: root privileges are required and sudo is unavailable. Log in as root and retry.' >&2; exit 1; fi; }
 ```
 
-This supports minimal Debian/Ubuntu images that do not install `sudo` by default. If the current shell is already `root`, no `sudo` package is required.
+The installer also starts Tunnel Checker after installation. It works from a root shell and from a sudo-capable user account.
 
-Alternative download sources below assume a root shell. From a non-root account with `sudo`, replace the final `bash` with `sudo bash`.
+Alternative download sources:
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/ach1992/tunnel-checker@main/install.sh | bash
@@ -32,28 +49,32 @@ For later runs:
 sudo tunnel-checker
 ```
 
-If the current shell is already `root`, omit `sudo`:
+If the current shell is already root, omit `sudo`.
 
-```bash
-tunnel-checker
-```
+On first run, select whether the machine is the **Iran** or **Foreign** endpoint. The selected role is saved for later runs.
 
-On first run select whether the machine is the **Iran** or **Foreign** endpoint.
+## Basic workflow
 
-## Normal workflow
+Install Tunnel Checker on both endpoints.
 
-On the target endpoint:
+On the endpoint that will act as the temporary test target:
 
 ```bash
 sudo tunnel-checker --server
 ```
 
-Default ports are:
+Default test ports are:
 
 - TCP `5201`
 - UDP `5202`
 
-Tunnel Checker does not modify firewall rules. Before testing, make sure the peer test target is `RUNNING` and the chosen TCP port plus paired UDP port are allowed by host/provider firewall rules (restricted to the peer IP when practical). The score assumes these prerequisites are already satisfied; under that assumption, failed checks are interpreted primarily as path/filtering restrictions.
+Before running a readiness test:
+
+- make sure the peer Tunnel Checker target is running;
+- allow the selected TCP port and paired UDP port through host/provider firewall rules;
+- restrict those rules to the peer IP when practical.
+
+Tunnel Checker does **not** modify firewall rules automatically.
 
 On the other endpoint:
 
@@ -61,71 +82,39 @@ On the other endpoint:
 sudo tunnel-checker --full
 ```
 
-The readiness test normally checks:
-
-- packet loss, RTT, and RTT variation;
-- sustained TCP data transfer using a bounded protocol-independent echo payload;
-- UDP continuity/loss with 1200-byte probes plus a bounded sustained multi-packet UDP sample;
-- path MTU;
-- local interface errors/drops during the test.
-
-The normal test is intentionally short and does **not** run or print multi-page path diagnostics.
+If the opposite connection-initiation direction also matters, stop or swap the target and repeat the test from the other endpoint.
 
 ## Result
 
-Typical output is deliberately compact:
+A normal result includes:
 
-```text
-TUNNEL READINESS - IRAN->FOREIGN
-------------------------------------------------------------------------------------------
- Pair: 5.202.4.20 -> 209.38.241.220
- Score: 91/100    Verdict: EXCELLENT    Confidence: HIGH
- Recommendation: USE
+- tested pair and direction;
+- TCP and UDP ports;
+- readiness score;
+- verdict;
+- confidence;
+- recommendation;
+- a compact result for each measured signal;
+- the primary reason for the result.
 
- SIGNAL           RESULT                                        STATUS
-------------------------------------------------------------------------------------------
- Ping             0% loss | 85.2 ms | var 0.5 ms               GOOD
- TCP data         48.0 Mbps effective | complete                GOOD
- UDP data         20/20 | 0.00% loss | bulk 240/240 KB         GOOD
- Path MTU         1500 bytes                                    GOOD
- Local interface  0.0000% drops | 0 errors                     GOOD
-
- Main reason: Core path checks completed without a major blocker.
- Scope: this score covers this pair/direction on TCP 5201 + UDP 5202; protocol-specific filtering may differ.
-```
-
-If ping is perfect but sustained TCP data stalls, that severe signal caps the general readiness result and can produce:
-
-```text
-Score: 49/100
-Verdict: POOR
-Recommendation: TRY ANOTHER SERVER
-```
-
-UDP success remains visible separately; Tunnel Checker does not infer UDP quality from a TCP failure.
-
-Tunnel Checker deliberately does **not** turn failed data-path checks into an inconclusive result just because a firewall/setup mistake is theoretically possible. With the expected setup above, an actively refused TCP port or zero returned TCP data is scored as a failed tested path and can recommend `TRY ANOTHER SERVER`. If you suspect the test target or firewall was not prepared correctly, fix that setup and rerun before acting on the score.
-
-A partial-transfer `STALL` remains especially strong path evidence because data started moving and then stopped.
-
-## Score meaning
+### Score meaning
 
 | Score | Verdict | Practical meaning |
 |---:|---|---|
-| 85-100 | EXCELLENT | Strong candidate for this tested pair/direction |
-| 70-84 | GOOD | Likely usable; review any warning |
-| 50-69 | CAUTION | Borderline or protocol-specific weakness |
-| <50 | POOR | Prefer another peer/server unless you know the limitation is acceptable |
+| 85-100 | `EXCELLENT` | Strong candidate for the tested pair and direction |
+| 70-84 | `GOOD` | Likely usable; review any warning |
+| 50-69 | `CAUTION` | Borderline or affected by one or more weak signals |
+| <50 | `POOR` | Prefer another peer/server unless the observed limitation is acceptable |
 
-Confidence (`HIGH`, `MEDIUM`, `LOW`) describes how much core evidence was successfully measured.
+Recommendations are one of:
 
-## Important scope
+- `USE`
+- `CAUTION`
+- `TRY ANOTHER SERVER`
 
-A result belongs to the **tested pair, direction, and ports**. It does not prove that the Iran server will behave the same with another Foreign IP/range/provider or another port.
+Confidence (`HIGH`, `MEDIUM`, or `LOW`) reflects how much useful evidence was successfully measured.
 
-The test measures generic path behavior rather than emulating every possible tunnel protocol. Protocol-aware filtering/DPI can still treat a specific application handshake, encrypted wrapper, raw-IP transport, or other recognizable traffic differently. A strong score means the underlying tested path is a good candidate; it is not a universal protocol-compatibility guarantee.
-
-The TCP echo transfers payload both ways on one connection. If you need to verify connections **initiated from the opposite endpoint**, stop/swap the target and run the same test from the peer.
+The score assumes the test target and selected test ports were prepared before the test. With those prerequisites met, failed TCP/UDP checks are treated as path/filtering evidence. If the target or firewall setup is uncertain, verify the setup and rerun before acting on the score.
 
 ## Quick check
 
@@ -133,34 +122,47 @@ The TCP echo transfers payload both ways on one connection. If you need to verif
 sudo tunnel-checker --quick
 ```
 
-This uses fewer probes and a smaller TCP payload. It is faster but intentionally capped at lower evidence confidence and skips the sustained UDP sample/PMTU search.
+Quick mode uses fewer probes and a smaller TCP payload. It finishes faster, but intentionally provides less evidence than the full test and skips the sustained UDP sample and PMTU search.
 
-## Status / stop / last result
+## Other commands
 
 ```bash
 sudo tunnel-checker --status
 sudo tunnel-checker --stop
 sudo tunnel-checker --last
-```
-
-## Update
-
-```bash
 sudo tunnel-checker --update
-```
-
-## Uninstall
-
-```bash
 sudo tunnel-checker --uninstall
+tunnel-checker --version
 ```
 
-The uninstaller removes Tunnel Checker-owned files/processes only. Shared OS packages are left installed. v0.4 also safely cleans obsolete Tunnel Checker-owned runtime files/logs from v0.3 when stopping or uninstalling a target.
+`--uninstall` removes Tunnel Checker-owned files and processes only. Shared OS packages are left installed.
+
+## Scope and limitations
+
+Each result applies only to the **tested server pair, direction, and ports**. A different Foreign IP, provider, route, direction, or port can behave differently.
+
+Tunnel Checker measures generic network-path readiness. It does not emulate every tunnel protocol or application handshake, so protocol-aware filtering/DPI may still affect a specific encrypted wrapper, raw-IP transport, ICMP-like transport, or other recognizable traffic pattern differently.
+
+A strong score means the tested underlying path is a good candidate. It is not a universal compatibility guarantee for every possible tunnel implementation.
 
 ## Safety
 
-Tunnel Checker never automatically changes firewall, routes, `sysctl`, tunnel configuration, or provider settings. Temporary listeners are unauthenticated and automatically time-bounded.
+Tunnel Checker does not automatically change:
+
+- firewall rules;
+- routes;
+- `sysctl` values;
+- tunnel configuration;
+- provider/network settings.
+
+Temporary test listeners are unauthenticated and time-bounded. Generated test traffic is also bounded.
+
+Tunnel Checker does not require an account, telemetry service, central server, or SSH connection between the tested endpoints.
 
 ## Project specification
 
-Durable product requirements: [`PROJECT-SPEC.md`](PROJECT-SPEC.md).
+Durable product requirements are documented in [`PROJECT-SPEC.md`](PROJECT-SPEC.md).
+
+## License
+
+Tunnel Checker is released under the [MIT License](LICENSE).

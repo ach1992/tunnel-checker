@@ -139,7 +139,7 @@ tunnel-checker --version
 
 ## Scope and limitations
 
-Each result applies only to the **tested server pair, direction, and ports**. A different Foreign IP, provider, route, direction, or port can behave differently.
+Each result applies only to the **tested pair, direction, and ports**. A different Foreign IP, provider, route, direction, or port can behave differently.
 
 Tunnel Checker measures generic network-path readiness. It does not emulate every tunnel protocol or application handshake, so protocol-aware filtering/DPI may still affect a specific encrypted wrapper, raw-IP transport, ICMP-like transport, or other recognizable traffic pattern differently.
 
